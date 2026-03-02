@@ -1,0 +1,3 @@
+{"type":"assistant","isSidechain":true,"model":"claude-sonnet-4-6","message":{"usage":{"input_tokens":999,"output_tokens":999,"cache_creation_input_tokens":0,"cache_read_input_tokens":0},"content":[{"type":"tool_use","name":"Write","input":{"file_path":"should-skip.js","content":"skip\nthis"}}]}}
+{"type":"assistant","isApiErrorMessage":true,"model":"claude-sonnet-4-6","message":{"usage":{"input_tokens":888,"output_tokens":888,"cache_creation_input_tokens":0,"cache_read_input_tokens":0},"content":[]}}
+{"type":"assistant","model":"claude-sonnet-4-6","message":{"usage":{"input_tokens":100,"output_tokens":50,"cache_creation_input_tokens":0,"cache_read_input_tokens":0},"content":[]}}

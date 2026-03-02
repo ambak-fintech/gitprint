@@ -1,0 +1,378 @@
+name: Gitprint
+
+on:
+  create:
+    branches: ['**']
+  push:
+    branches: ['**']
+
+permissions:
+  pull-requests: write
+  contents: write
+
+jobs:
+  create-pr:
+    if: github.event_name == 'create' && github.event.ref_type == 'branch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create Draft Pull Request
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const branch = context.payload.ref;
+            const skip = ['BASE_BRANCH_PLACEHOLDER', 'main', 'master', 'develop', 'pre_release_master'];
+            if (skip.includes(branch)) return;
+
+            const title = branch
+              .replace(/^(feature|fix|hotfix|bugfix|chore|refactor)\//, '')
+              .replace(/[-_]/g, ' ')
+              .replace(/^\w/, c => c.toUpperCase());
+
+            try {
+              const { data: pr } = await github.rest.pulls.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                head: branch,
+                base: 'BASE_BRANCH_PLACEHOLDER',
+                body: `## Auto-generated PR\n\n**Branch:** \`${branch}\`\n**Created by:** @${context.actor}`,
+                draft: true,
+              });
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: pr.number, labels: ['auto-pr'],
+              });
+              console.log(`PR #${pr.number} created`);
+            } catch (e) {
+              if (e.status === 422) console.log('PR already exists');
+              else throw e;
+            }
+
+  ai-stats:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch Gitprint notes
+        run: |
+          git fetch origin refs/notes/gitprint:refs/notes/gitprint 2>/dev/null || true
+
+      - name: Post AI Contribution Report
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { execSync } = require('child_process');
+            const baseBranch = 'BASE_BRANCH_PLACEHOLDER';
+
+            // ─── Skip base branches ───
+            const currentBranch = context.ref.replace('refs/heads/', '');
+            const skip = [baseBranch, 'main', 'master', 'develop', 'pre_release_master'];
+            if (skip.includes(currentBranch)) return;
+
+            // ─── Find PR ───
+            const { data: prs } = await github.rest.pulls.list({
+              owner: context.repo.owner, repo: context.repo.repo,
+              head: `${context.repo.owner}:${currentBranch}`, state: 'open',
+            });
+            const pr = prs[0];
+            if (!pr) { console.log('No open PR found'); return; }
+
+            // ─── Read all Gitprint notes from PR commits ───
+            let commits;
+            try {
+              commits = execSync(
+                `git log origin/${baseBranch}..HEAD --format="%H"`,
+                { encoding: 'utf8' }
+              ).trim().split('\n').filter(Boolean);
+            } catch (e) { console.log('No commits in range'); return; }
+
+            const allSessions = [];
+            const allFileStats = {};
+
+            for (const sha of commits) {
+              try {
+                const note = execSync(
+                  `git notes --ref=gitprint show ${sha} 2>/dev/null`,
+                  { encoding: 'utf8' }
+                ).trim();
+                if (!note) continue;
+
+                const data = JSON.parse(note);
+
+                // Merge sessions
+                for (const s of (data.sessions || [])) {
+                  if (!allSessions.find(x => x.session_id === s.session_id)) {
+                    allSessions.push(s);
+                  }
+                }
+
+                // Merge file stats (accumulate)
+                for (const f of (data.ai_files || [])) {
+                  if (!allFileStats[f.file]) {
+                    allFileStats[f.file] = { ai_lines_added: 0, ai_lines_removed: 0 };
+                  }
+                  allFileStats[f.file].ai_lines_added += f.ai_lines_added || 0;
+                  allFileStats[f.file].ai_lines_removed += f.ai_lines_removed || 0;
+                }
+              } catch (e) { /* no note on this commit */ }
+            }
+
+            // ─── Token stats ───
+            const totalInputTokens = allSessions.reduce((s, x) => s + (x.input_tokens || 0), 0);
+            const totalOutputTokens = allSessions.reduce((s, x) => s + (x.output_tokens || 0), 0);
+            const totalCacheCreation = allSessions.reduce((s, x) => s + (x.cache_creation_tokens || 0), 0);
+            const totalCacheRead = allSessions.reduce((s, x) => s + (x.cache_read_tokens || 0), 0);
+            const totalTokens = totalInputTokens + totalOutputTokens + totalCacheCreation + totalCacheRead;
+            const totalTurns = allSessions.reduce((s, x) => s + (x.turns || 0), 0);
+
+            if (allSessions.length === 0 && totalTokens === 0) return;
+
+            // ─── Cost estimation ───
+            const pricing = {
+              'opus':   { input: 15, output: 75, cache_read: 1.50, cache_creation: 18.75 },
+              'sonnet': { input: 3,  output: 15, cache_read: 0.30, cache_creation: 3.75 },
+              'haiku':  { input: 1,  output: 5,  cache_read: 0.10, cache_creation: 1.25 },
+            };
+
+            const matchPricing = (modelName) => {
+              const ml = modelName.toLowerCase();
+              if (ml.includes('opus')) return pricing.opus;
+              if (ml.includes('sonnet')) return pricing.sonnet;
+              if (ml.includes('haiku')) return pricing.haiku;
+              return pricing.sonnet;
+            };
+
+            // Use pre-calculated cost if available, otherwise estimate from tokens
+            let totalCost = 0;
+            for (const s of allSessions) {
+              if (s.estimated_cost != null) {
+                totalCost += s.estimated_cost;
+              } else {
+                // Fallback: estimate from model aggregates
+                for (const [model, info] of Object.entries(s.models || {})) {
+                  const p = matchPricing(model);
+                  totalCost += (info.input_tokens / 1e6) * p.input;
+                  totalCost += (info.output_tokens / 1e6) * p.output;
+                }
+                const cc = s.cache_creation_tokens || 0;
+                const cr = s.cache_read_tokens || 0;
+                const dm = Object.keys(s.models || {})[0] || '';
+                const dp = matchPricing(dm);
+                totalCost += (cc / 1e6) * dp.cache_creation;
+                totalCost += (cr / 1e6) * dp.cache_read;
+              }
+            }
+            const fmtCost = (c) => c < 0.01 ? `$${c.toFixed(4)}` : `$${c.toFixed(2)}`;
+
+            // ─── File diff stats ───
+            const diff = execSync(
+              `git diff --numstat origin/${baseBranch}...HEAD`
+            ).toString();
+
+            let totalLines = 0, aiLines = 0, humanLines = 0;
+            const fileStats = [];
+
+            diff.split('\n').filter(Boolean).forEach(line => {
+              const [added, removed, file] = line.split('\t');
+              const totalFileLines = (parseInt(added) || 0) + (parseInt(removed) || 0);
+              totalLines += totalFileLines;
+
+              const aiStat = allFileStats[file];
+              let fileAiLines = 0;
+
+              if (aiStat) {
+                fileAiLines = Math.min(
+                  (aiStat.ai_lines_added || 0) + (aiStat.ai_lines_removed || 0),
+                  totalFileLines
+                );
+              }
+
+              const fileHumanLines = totalFileLines - fileAiLines;
+              aiLines += fileAiLines;
+              humanLines += fileHumanLines;
+
+              const aiPct = totalFileLines > 0 ? Math.round((fileAiLines / totalFileLines) * 100) : 0;
+              let attribution = 'human';
+              if (aiPct === 100) attribution = 'ai';
+              else if (aiPct > 0) attribution = 'shared';
+
+              fileStats.push({
+                file, lines: totalFileLines,
+                aiLines: fileAiLines, humanLines: fileHumanLines,
+                aiPct, attribution,
+              });
+            });
+
+            const aiPercent = totalLines > 0 ? Math.round((aiLines / totalLines) * 100) : 0;
+
+            if (aiPercent === 0 && totalTokens === 0) return;
+
+            // ─── Labels ───
+            let levelLabel = 'ai: minimal (<25%)';
+            if (aiPercent >= 75) levelLabel = 'ai: high (75%+)';
+            else if (aiPercent >= 50) levelLabel = 'ai: medium (50-75%)';
+            else if (aiPercent >= 25) levelLabel = 'ai: moderate (25-50%)';
+
+            try {
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: pr.number, labels: [levelLabel],
+              });
+            } catch (e) { console.log('Label error:', e.message); }
+
+            // ─── Helpers ───
+            const fmt = n => n > 1000 ? `${(n/1000).toFixed(1)}k` : String(n);
+
+            const makeBar = (pct, len = 20) => {
+              const filled = Math.round((pct / 100) * len);
+              return '█'.repeat(filled) + '░'.repeat(len - filled);
+            };
+
+            const modelIcons = {
+              'opus': '🟣', 'sonnet': '🔵', 'haiku': '🟢',
+              'gpt': '⚪', 'o1': '🟠', 'o3': '🟠', 'gemini': '🔴',
+              'deepseek': '🟤', 'default': '⚫',
+            };
+
+            const getIcon = (m) => {
+              const ml = m.toLowerCase();
+              for (const [k, v] of Object.entries(modelIcons)) {
+                if (ml.includes(k)) return v;
+              }
+              return modelIcons.default;
+            };
+
+            const getShortName = (m) => {
+              const ml = m.toLowerCase();
+              if (ml.includes('opus')) return 'Opus';
+              if (ml.includes('sonnet')) return 'Sonnet';
+              if (ml.includes('haiku')) return 'Haiku';
+              return m.split('/').pop().split('-').slice(0, 3).join('-');
+            };
+
+            // ─── Model aggregation ───
+            const modelAgg = {};
+            for (const s of allSessions) {
+              for (const [model, info] of Object.entries(s.models || {})) {
+                if (!modelAgg[model]) modelAgg[model] = { input_tokens: 0, output_tokens: 0, turns: 0 };
+                modelAgg[model].input_tokens += info.input_tokens || 0;
+                modelAgg[model].output_tokens += info.output_tokens || 0;
+                modelAgg[model].turns += info.turns || 0;
+              }
+            }
+
+            const modelRows = Object.entries(modelAgg)
+              .sort((a, b) => (b[1].input_tokens + b[1].output_tokens) - (a[1].input_tokens + a[1].output_tokens))
+              .map(([model, info]) => {
+                const total = info.input_tokens + info.output_tokens;
+                const pct = totalTokens > 0 ? Math.round((total / totalTokens) * 100) : 0;
+                return `| ${getIcon(model)} ${getShortName(model)} | ${fmt(info.input_tokens)} | ${fmt(info.output_tokens)} | ${fmt(total)} | ${info.turns} | \`${makeBar(pct)}\` ${pct}% |`;
+              }).join('\n');
+
+            // ─── Session rows ───
+            const toolIcons = {
+              'claude-code': '🟣',
+              'cursor': '🔵',
+              'copilot': '⚪',
+              'gemini': '🔴',
+              'windsurf': '🟢',
+              'augment': '🟡',
+              'opencode': '🟤',
+              'default': '🔧',
+            };
+
+            const getToolIcon = (t) => toolIcons[t] || toolIcons.default;
+            const getToolName = (t) => {
+              const names = {
+                'claude-code': 'Claude Code', 'gemini': 'Gemini CLI',
+                'augment': 'Augment Code', 'copilot': 'Copilot', 'opencode': 'OpenCode',
+              };
+              return names[t] || t.charAt(0).toUpperCase() + t.slice(1);
+            };
+
+            const sessionRows = allSessions
+              .sort((a, b) => (a.timestamp || '').localeCompare(b.timestamp || ''))
+              .map((s, i) => {
+                const sessionModels = Object.keys(s.models || {}).map(m => `${getIcon(m)} ${getShortName(m)}`).join(', ');
+                const ts = (s.timestamp || '').slice(0, 16);
+                const tool = s.tool || 'claude-code';
+                return `| ${i + 1} | ${getToolIcon(tool)} ${getToolName(tool)} | ${ts} | ${fmt(s.input_tokens || 0)} | ${fmt(s.output_tokens || 0)} | ${s.turns || 0} | ${sessionModels} |`;
+              }).join('\n');
+
+            // ─── File rows ───
+            const fileRows = fileStats
+              .sort((a, b) => b.lines - a.lines)
+              .map(f => {
+                const icon = f.attribution === 'ai' ? '🤖' : f.attribution === 'shared' ? '🤝' : '👤';
+                return `| \`${f.file}\` | ${f.lines} | ${f.aiLines} | ${f.humanLines} | ${icon} ${f.aiPct}% AI |`;
+              }).join('\n');
+
+            // ─── Build comment ───
+            const body = [
+              '## 🔍 Gitprint — Contribution Report',
+              `\`${makeBar(aiPercent)}\` **${aiPercent}% AI-generated code**\n`,
+              '### 📊 Code Stats',
+              '| Metric | Lines |',
+              '|--------|-------|',
+              `| 🤖 AI lines | ${aiLines} |`,
+              `| 👤 Human lines | ${humanLines} |`,
+              `| **Total** | **${totalLines}** |`,
+              '',
+              '### 🧠 Models Used',
+              '| Model | Input | Output | Total | Turns | Usage |',
+              '|-------|-------|--------|-------|-------|-------|',
+              modelRows,
+              '',
+              '### 🔥 Token Usage',
+              '| Metric | Value |',
+              '|--------|-------|',
+              `| Input tokens | ${fmt(totalInputTokens)} |`,
+              `| Output tokens | ${fmt(totalOutputTokens)} |`,
+              `| Cache creation | ${fmt(totalCacheCreation)} |`,
+              `| Cache read | ${fmt(totalCacheRead)} |`,
+              `| **Total tokens** | **${fmt(totalTokens)}** |`,
+              `| 💰 Estimated cost | **${fmtCost(totalCost)}** |`,
+              `| 🔄 Total turns | ${totalTurns} |`,
+              `| 📋 Sessions | ${allSessions.length} |`,
+              '',
+              '<details><summary>📋 Session Breakdown</summary>\n',
+              '| # | Tool | Timestamp | Input | Output | Turns | Models |',
+              '|---|------|-----------|-------|--------|-------|--------|',
+              sessionRows,
+              '\n</details>',
+              '',
+              '<details><summary>📁 File Attribution</summary>\n',
+              '| File | Total | AI | Human | Attribution |',
+              '|------|-------|-----|-------|-------------|',
+              fileRows,
+              '\n</details>',
+              '',
+              '_Powered by [Gitprint](https://github.com/ambak-fintech/gitprint) — AI code attribution from session transcripts, stored in Git Notes._',
+            ].join('\n');
+
+            // ─── Post or update comment ───
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner, repo: context.repo.repo,
+              issue_number: pr.number,
+            });
+
+            const existing = comments.find(c =>
+              c.body?.includes('Gitprint') && c.user?.type === 'Bot'
+            );
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner, repo: context.repo.repo,
+                comment_id: existing.id, body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: pr.number, body,
+              });
+            }

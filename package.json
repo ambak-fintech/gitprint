@@ -1,0 +1,31 @@
+{
+  "name": "@ambak/gitprint",
+  "version": "0.2.1",
+  "description": "AI code attribution for pull requests — powered by Git Notes",
+  "bin": {
+    "gitprint": "./bin/cli.js"
+  },
+  "scripts": {
+    "test": "node --test test/unit/*.test.js test/integration/*.test.js",
+    "test:unit": "node --test test/unit/*.test.js",
+    "test:integration": "node --test test/integration/*.test.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": [
+    "ai",
+    "git",
+    "attribution",
+    "claude",
+    "copilot",
+    "code-review",
+    "github-actions"
+  ],
+  "author": "Harpreet Singh",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ambak-fintech/gitprint"
+  }
+}

@@ -1,0 +1,44 @@
+{
+  "sessions": [
+    {
+      "session_id": "sess-claude-001",
+      "tool": "claude-code",
+      "timestamp": "2025-01-15T10:00:00.000Z",
+      "input_tokens": 5000,
+      "output_tokens": 2000,
+      "cache_creation_tokens": 0,
+      "cache_read_tokens": 0,
+      "estimated_cost": 0.045,
+      "turns": 5,
+      "models": { "claude-sonnet-4-6": { "input_tokens": 5000, "output_tokens": 2000, "turns": 5 } }
+    },
+    {
+      "session_id": "sess-cursor-001",
+      "tool": "cursor",
+      "timestamp": "2025-01-15T11:00:00.000Z",
+      "input_tokens": 3000,
+      "output_tokens": 1500,
+      "cache_creation_tokens": 0,
+      "cache_read_tokens": 0,
+      "estimated_cost": 0.0225,
+      "turns": 3,
+      "models": { "gpt-4o": { "input_tokens": 3000, "output_tokens": 1500, "turns": 3 } }
+    },
+    {
+      "session_id": "sess-copilot-001",
+      "tool": "copilot",
+      "timestamp": "2025-01-15T12:00:00.000Z",
+      "input_tokens": 2000,
+      "output_tokens": 1000,
+      "cache_creation_tokens": 0,
+      "cache_read_tokens": 0,
+      "estimated_cost": 0.015,
+      "turns": 2,
+      "models": { "gpt-4o": { "input_tokens": 2000, "output_tokens": 1000, "turns": 2 } }
+    }
+  ],
+  "ai_files": [
+    { "file": "src/app.js", "ai_lines_added": 50, "ai_lines_removed": 15 },
+    { "file": "src/utils.js", "ai_lines_added": 20, "ai_lines_removed": 5 }
+  ]
+}

@@ -1,0 +1,1 @@
+{"type":"assistant","model":"gpt-4o","message":{"usage":{"input_tokens":500,"output_tokens":250,"cache_creation_input_tokens":0,"cache_read_input_tokens":0},"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"src/component.tsx","old_string":"old line","new_string":"new line1\nnew line2"}}]}}

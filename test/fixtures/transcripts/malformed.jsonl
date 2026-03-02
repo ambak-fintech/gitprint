@@ -1,0 +1,4 @@
+{"type":"assistant","model":"claude-sonnet-4-6","message":{"usage":{"input_tokens":100,"output_tokens":50,"cache_creation_input_tokens":0,"cache_read_input_tokens":0},"content":[]}}
+this is not json
+{"broken json
+{"type":"assistant","model":"claude-sonnet-4-6","message":{"usage":{"input_tokens":200,"output_tokens":100,"cache_creation_input_tokens":0,"cache_read_input_tokens":0},"content":[]}}

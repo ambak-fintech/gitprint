@@ -1,0 +1,4 @@
+{"type":"message_update","model":"gemini-2.5-pro","tokens":{"input":300,"output":150}}
+{"type":"tool_use","name":"replace","input":{"file_path":"src/main.py","old_string":"before","new_string":"after\nmore"}}
+{"usage":{"input_tokens":200,"output_tokens":100},"model":"gemini-2.5-pro"}
+{"type":"tool_call","tool_name":"write_file","args":{"file_path":"src/config.py","content":"a\nb\nc"}}

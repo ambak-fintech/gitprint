@@ -1,0 +1,2 @@
+{"type":"assistant.message","model":"gpt-4o","usage":{"prompt_tokens":800,"completion_tokens":400}}
+{"type":"tool.execution_complete","toolName":"replace_string_in_file","toolArgs":"{\"path\":\"src/handler.js\",\"old_string\":\"old code\",\"new_string\":\"new code\\nline2\"}"}

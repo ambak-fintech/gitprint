@@ -1,0 +1,22 @@
+{
+  "sessions": [
+    {
+      "session_id": "sess-001",
+      "tool": "claude-code",
+      "timestamp": "2025-01-15T10:00:00.000Z",
+      "input_tokens": 5000,
+      "output_tokens": 2000,
+      "cache_creation_tokens": 1000,
+      "cache_read_tokens": 500,
+      "estimated_cost": 0.1234,
+      "turns": 5,
+      "models": {
+        "claude-sonnet-4-6": { "input_tokens": 6500, "output_tokens": 2000, "turns": 5 }
+      }
+    }
+  ],
+  "ai_files": [
+    { "file": "src/app.js", "ai_lines_added": 20, "ai_lines_removed": 5 },
+    { "file": "src/utils.js", "ai_lines_added": 10, "ai_lines_removed": 0 }
+  ]
+}
