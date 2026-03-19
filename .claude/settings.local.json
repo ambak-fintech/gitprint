@@ -1,0 +1,32 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(node:*)",
+      "WebSearch",
+      "WebFetch(domain:cursor.com)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:forum.cursor.com)",
+      "WebFetch(domain:docs.github.com)",
+      "WebFetch(domain:deepwiki.com)",
+      "WebFetch(domain:gist.github.com)",
+      "WebFetch(domain:dev.to)",
+      "WebFetch(domain:opencode.ai)",
+      "WebFetch(domain:kilo.ai)",
+      "WebFetch(domain:docs.windsurf.com)",
+      "WebFetch(domain:docs.augmentcode.com)",
+      "WebFetch(domain:geminicli.com)",
+      "mcp__paper__get_basic_info",
+      "mcp__paper__get_font_family_info",
+      "mcp__paper__create_artboard",
+      "mcp__paper__write_html",
+      "mcp__paper__get_screenshot",
+      "mcp__paper__update_styles",
+      "mcp__paper__get_computed_styles",
+      "mcp__paper__finish_working_on_nodes",
+      "mcp__paper__set_text_content",
+      "mcp__paper__delete_nodes",
+      "mcp__paper__get_children",
+      "Bash(head:*)"
+    ]
+  }
+}

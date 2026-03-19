@@ -1,0 +1,14 @@
+{
+  "hooks": {
+    "post_cascade_response_with_transcript": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".windsurf/hooks/gitprint-stop.sh"
+          }
+        ]
+      }
+    ]
+  }
+}

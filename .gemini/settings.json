@@ -1,0 +1,14 @@
+{
+  "hooks": {
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$GEMINI_PROJECT_DIR\"/.gemini/hooks/gitprint-stop.sh"
+          }
+        ]
+      }
+    ]
+  }
+}

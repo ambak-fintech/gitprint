@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "hooks": {
+    "Stop": [
+      {
+        "type": "command",
+        "command": ".augment/hooks/gitprint-stop.sh",
+        "timeoutSec": 30
+      }
+    ],
+    "PostToolUse": [
+      {
+        "type": "command",
+        "command": ".augment/hooks/gitprint-post-tool.sh",
+        "timeoutSec": 10
+      }
+    ]
+  }
+}
