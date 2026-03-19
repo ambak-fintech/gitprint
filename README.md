@@ -64,6 +64,10 @@ Remove the `create-pr` job from `gitprint.yml` if you don't want automatic draft
 3. Data stored as a Git Note on the commit (no files added to your repo)
 4. On push, GitHub Action reads notes across all PR commits → posts an attribution report as a PR comment
 
+## Contributing
+
+Contributions are welcome! Run `gitprint doctor` to verify your setup after making changes.
+
 ## License
 
 MIT
