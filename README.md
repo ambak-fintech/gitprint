@@ -25,6 +25,18 @@ git push
 | `gitprint report` | Generate markdown report with full attribution details |
 | `gitprint uninstall` | Remove Gitprint from current repo |
 
+## Supported AI Tools
+
+| Tool | Attribution | Token Tracking | Hook Type |
+|------|------------|----------------|-----------|
+| Claude Code | Yes | Yes | Session end |
+| Cursor | Yes | Yes | Session end |
+| Copilot CLI | Yes | Yes | Post tool use + Session end |
+| Gemini CLI | Yes | Yes | Session end |
+| Windsurf | Yes | No | Post cascade response |
+| Augment Code | Yes | No | Post tool use + Stop |
+| OpenCode | Yes | Partial | JS plugin |
+
 ## Configuration
 
 ### Custom base branch

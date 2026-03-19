@@ -19,8 +19,14 @@
     "attribution",
     "claude",
     "copilot",
+    "cursor",
+    "gemini",
+    "windsurf",
+    "augment",
+    "opencode",
     "code-review",
-    "github-actions"
+    "github-actions",
+    "git-notes"
   ],
   "author": "Harpreet Singh",
   "license": "MIT",
