@@ -74,12 +74,20 @@ jobs:
             const skip = [baseBranch, 'main', 'master', 'develop', 'pre_release_master'];
             if (skip.includes(currentBranch)) return;
 
-            // ─── Find PR ───
-            const { data: prs } = await github.rest.pulls.list({
-              owner: context.repo.owner, repo: context.repo.repo,
-              head: `${context.repo.owner}:${currentBranch}`, state: 'open',
-            });
-            const pr = prs[0];
+            // ─── Find PR (retry to allow create-pr job to finish) ───
+            let pr;
+            for (let attempt = 0; attempt < 4; attempt++) {
+              const { data: prs } = await github.rest.pulls.list({
+                owner: context.repo.owner, repo: context.repo.repo,
+                head: `${context.repo.owner}:${currentBranch}`, state: 'open',
+              });
+              pr = prs[0];
+              if (pr) break;
+              if (attempt < 3) {
+                console.log(`No open PR found, retrying in 10s (${attempt + 1}/3)...`);
+                await new Promise(r => setTimeout(r, 10000));
+              }
+            }
             if (!pr) { console.log('No open PR found'); return; }
 
             // ─── Read all Gitprint notes from PR commits ───
