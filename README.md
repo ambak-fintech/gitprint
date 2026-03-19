@@ -1,6 +1,8 @@
 # Gitprint
 
-AI code attribution for pull requests.
+AI code attribution for pull requests — powered by Git Notes.
+
+Track how much code in your PRs was written by AI tools. Gitprint parses session transcripts for exact line-level attribution, stores stats as Git Notes, and posts an auto-updating report on every PR via GitHub Actions.
 
 ## Quick Start
 
