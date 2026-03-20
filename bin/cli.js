@@ -553,7 +553,7 @@ function gatherBranchData(base) {
 
   if (commits.length === 0) return null;
 
-  let totalSessions = 0, totalTokens = 0, totalTurns = 0, totalCost = 0, notesFound = 0;
+  let totalSessions = 0, totalTokens = 0, totalTurns = 0, totalApiCalls = 0, totalCost = 0, notesFound = 0;
   const files = {};
   const tools = {};
   const sessions = [];
@@ -571,6 +571,7 @@ function gatherBranchData(base) {
         totalTokens += (s.input_tokens || 0) + (s.output_tokens || 0) +
                        (s.cache_creation_tokens || 0) + (s.cache_read_tokens || 0);
         totalTurns += s.turns || 0;
+        totalApiCalls += s.api_calls || s.turns || 0;
         const tool = s.tool || 'claude-code';
         tools[tool] = (tools[tool] || 0) + 1;
         totalCost += sessionCost(s);
@@ -586,7 +587,7 @@ function gatherBranchData(base) {
   }
 
   return {
-    commits, notesFound, totalSessions, totalTokens, totalTurns, totalCost,
+    commits, notesFound, totalSessions, totalTokens, totalTurns, totalApiCalls, totalCost,
     files, tools, sessions,
   };
 }
@@ -722,11 +723,11 @@ function status() {
     return;
   }
 
-  const { commits, notesFound, totalSessions, totalTokens, totalTurns, totalCost, files, tools } = data;
+  const { commits, notesFound, totalSessions, totalTokens, totalTurns, totalApiCalls, totalCost, files, tools } = data;
 
   const toolSummary = Object.entries(tools).map(([t, n]) => `${getToolName(t)} (${n})`).join(', ');
   console.log(`  Commits: ${commits.length}  |  Notes: ${notesFound}  |  Sessions: ${totalSessions}`);
-  console.log(`  Tokens:  ${fmt(totalTokens)}  |  Turns: ${totalTurns}  |  Cost: ${fmtCost(totalCost)}`);
+  console.log(`  Tokens:  ${fmt(totalTokens)}  |  Turns: ${totalTurns}  |  API calls: ${totalApiCalls}  |  Cost: ${fmtCost(totalCost)}`);
   if (toolSummary) console.log(`  Tools:   ${toolSummary}`);
   console.log('');
 
@@ -772,16 +773,16 @@ async function report() {
     return;
   }
 
-  const { commits, notesFound, totalSessions, totalTokens, totalTurns, totalCost, files, tools, sessions } = data;
+  const { commits, notesFound, totalSessions, totalTokens, totalTurns, totalApiCalls, totalCost, files, tools, sessions } = data;
 
   // Model aggregation
   const modelAgg = {};
   for (const s of sessions) {
     for (const [model, info] of Object.entries(s.models || {})) {
-      if (!modelAgg[model]) modelAgg[model] = { input_tokens: 0, output_tokens: 0, turns: 0 };
+      if (!modelAgg[model]) modelAgg[model] = { input_tokens: 0, output_tokens: 0, api_calls: 0 };
       modelAgg[model].input_tokens += info.input_tokens || 0;
       modelAgg[model].output_tokens += info.output_tokens || 0;
-      modelAgg[model].turns += info.turns || 0;
+      modelAgg[model].api_calls += info.api_calls || info.turns || 0;
     }
   }
 
@@ -807,6 +808,7 @@ async function report() {
     '|--------|-------|',
     `| Total tokens | ${fmt(totalTokens)} |`,
     `| Total turns | ${totalTurns} |`,
+    `| API calls | ${totalApiCalls} |`,
     `| Estimated cost | ${fmtCost(totalCost)} |`,
     `| Sessions | ${totalSessions} |`,
     `| Tools | ${Object.entries(tools).map(([t, n]) => `${getToolName(t)} (${n})`).join(', ') || 'None'} |`,
@@ -817,11 +819,11 @@ async function report() {
   const modelEntries = Object.entries(modelAgg);
   if (modelEntries.length > 0) {
     lines.push('## Models Used', '');
-    lines.push('| Model | Input Tokens | Output Tokens | Total | Turns |');
-    lines.push('|-------|-------------|--------------|-------|-------|');
+    lines.push('| Model | Input Tokens | Output Tokens | Total | API calls |');
+    lines.push('|-------|-------------|--------------|-------|-----------|');
     for (const [model, info] of modelEntries.sort((a, b) => (b.input_tokens + b.output_tokens) - (a.input_tokens + a.output_tokens))) {
       const total = info.input_tokens + info.output_tokens;
-      lines.push(`| ${getShortName(model)} | ${fmt(info.input_tokens)} | ${fmt(info.output_tokens)} | ${fmt(total)} | ${info.turns} |`);
+      lines.push(`| ${getShortName(model)} | ${fmt(info.input_tokens)} | ${fmt(info.output_tokens)} | ${fmt(total)} | ${info.api_calls} |`);
     }
     lines.push('');
   }
@@ -829,15 +831,15 @@ async function report() {
   // Sessions table
   if (sessions.length > 0) {
     lines.push('## Session Breakdown', '');
-    lines.push('| # | Tool | Timestamp | Input | Output | Cost | Turns | Models |');
-    lines.push('|---|------|-----------|-------|--------|------|-------|--------|');
+    lines.push('| # | Tool | Timestamp | Input | Output | Cost | Turns | API calls | Models |');
+    lines.push('|---|------|-----------|-------|--------|------|-------|-----------|--------|');
     const sorted = sessions.sort((a, b) => (a.timestamp || '').localeCompare(b.timestamp || ''));
     sorted.forEach((s, i) => {
       const sessionModels = Object.keys(s.models || {}).map(m => getShortName(m)).join(', ');
       const ts = (s.timestamp || '').slice(0, 16);
       const tool = getToolName(s.tool || 'claude-code');
       const cost = fmtCost(sessionCost(s));
-      lines.push(`| ${i + 1} | ${tool} | ${ts} | ${fmt(s.input_tokens || 0)} | ${fmt(s.output_tokens || 0)} | ${cost} | ${s.turns || 0} | ${sessionModels} |`);
+      lines.push(`| ${i + 1} | ${tool} | ${ts} | ${fmt(s.input_tokens || 0)} | ${fmt(s.output_tokens || 0)} | ${cost} | ${s.turns || 0} | ${s.api_calls || s.turns || 0} | ${sessionModels} |`);
     });
     lines.push('');
   }

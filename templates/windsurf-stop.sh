@@ -47,7 +47,7 @@ STATS=$(node -e "
     .filter(Boolean);
 
   // Windsurf does NOT provide token data — set to 0
-  let inputTokens = 0, outputTokens = 0, cacheCreation = 0, cacheRead = 0, turns = 0;
+  let inputTokens = 0, outputTokens = 0, cacheCreation = 0, cacheRead = 0, turns = 0, apiCalls = 0;
   const models = {};
   const fileLineStats = {};
 
@@ -72,13 +72,16 @@ STATS=$(node -e "
     try {
       const entry = JSON.parse(line);
 
-      // Count turns from assistant responses (best effort)
+      // Count user messages as turns
+      if (entry.type === 'human' || entry.role === 'user') turns++;
+
+      // Count API calls from assistant responses (best effort)
       if (entry.type === 'assistant' || entry.role === 'assistant') {
-        turns++;
+        apiCalls++;
         const model = entry.model || entry.message?.model || '';
         if (model) {
-          if (!models[model]) models[model] = { input_tokens: 0, output_tokens: 0, turns: 0 };
-          models[model].turns++;
+          if (!models[model]) models[model] = { input_tokens: 0, output_tokens: 0, api_calls: 0 };
+          models[model].api_calls++;
         }
       }
 
@@ -91,7 +94,7 @@ STATS=$(node -e "
         outputTokens += out;
 
         const model = entry.model || entry.message?.model || 'unknown';
-        if (!models[model]) models[model] = { input_tokens: 0, output_tokens: 0, turns: 0 };
+        if (!models[model]) models[model] = { input_tokens: 0, output_tokens: 0, api_calls: 0 };
         models[model].input_tokens += inp;
         models[model].output_tokens += out;
       }
@@ -171,6 +174,7 @@ STATS=$(node -e "
     cache_read_tokens: cacheRead,
     estimated_cost: 0,
     turns,
+    api_calls: apiCalls,
     models,
     ai_files: aiFiles
   }));

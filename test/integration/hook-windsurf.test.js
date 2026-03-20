@@ -48,11 +48,12 @@ describe('Windsurf hook (windsurf-stop.sh)', () => {
     assert.strictEqual(note.sessions[0].estimated_cost, 0);
   });
 
-  it('counts turns from assistant entries', () => {
+  it('counts turns from human entries and api_calls from assistant entries', () => {
     const transcript = path.join(FIXTURES, 'windsurf-session.jsonl');
     runHook('windsurf-stop.sh', { transcript_path: transcript, trajectory_id: 'traj-1' }, { cwd: dir });
     const note = readGitNote(dir);
     assert.strictEqual(note.sessions[0].turns, 1);
+    assert.strictEqual(note.sessions[0].api_calls, 1);
   });
 
   it('tracks file edits', () => {

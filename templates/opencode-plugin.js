@@ -19,6 +19,7 @@ module.exports = {
     let cacheCreation = 0;
     let cacheRead = 0;
     let turns = 0;
+    let apiCalls = 0;
     const models = {};
     let sessionId = 'unknown';
 
@@ -88,13 +89,13 @@ module.exports = {
           outputTokens += out;
           cacheCreation += cc;
           cacheRead += cr;
-          turns++;
+          apiCalls++;
 
           const model = event.model || 'unknown';
-          if (!models[model]) models[model] = { input_tokens: 0, output_tokens: 0, turns: 0 };
+          if (!models[model]) models[model] = { input_tokens: 0, output_tokens: 0, api_calls: 0 };
           models[model].input_tokens += inp + cc + cr;
           models[model].output_tokens += out;
-          models[model].turns++;
+          models[model].api_calls++;
         }
 
         // Capture session ID
@@ -127,6 +128,7 @@ module.exports = {
           cache_read_tokens: cacheRead,
           estimated_cost: 0,
           turns,
+          api_calls: apiCalls,
           models,
           ai_files: aiFiles,
         };
@@ -209,6 +211,7 @@ module.exports = {
         cacheCreation = 0;
         cacheRead = 0;
         turns = 0;
+        apiCalls = 0;
         for (const key of Object.keys(models)) delete models[key];
       } catch (e) {
         logErr('session.idle handler failed:', e.message);

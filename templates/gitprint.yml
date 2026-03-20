@@ -137,6 +137,7 @@ jobs:
             const totalCacheRead = allSessions.reduce((s, x) => s + (x.cache_read_tokens || 0), 0);
             const totalTokens = totalInputTokens + totalOutputTokens + totalCacheCreation + totalCacheRead;
             const totalTurns = allSessions.reduce((s, x) => s + (x.turns || 0), 0);
+            const totalApiCalls = allSessions.reduce((s, x) => s + (x.api_calls || x.turns || 0), 0);
 
             if (allSessions.length === 0 && totalTokens === 0) return;
 
@@ -267,10 +268,10 @@ jobs:
             const modelAgg = {};
             for (const s of allSessions) {
               for (const [model, info] of Object.entries(s.models || {})) {
-                if (!modelAgg[model]) modelAgg[model] = { input_tokens: 0, output_tokens: 0, turns: 0 };
+                if (!modelAgg[model]) modelAgg[model] = { input_tokens: 0, output_tokens: 0, api_calls: 0 };
                 modelAgg[model].input_tokens += info.input_tokens || 0;
                 modelAgg[model].output_tokens += info.output_tokens || 0;
-                modelAgg[model].turns += info.turns || 0;
+                modelAgg[model].api_calls += info.api_calls || info.turns || 0;
               }
             }
 
@@ -279,7 +280,7 @@ jobs:
               .map(([model, info]) => {
                 const total = info.input_tokens + info.output_tokens;
                 const pct = totalTokens > 0 ? Math.round((total / totalTokens) * 100) : 0;
-                return `| ${getIcon(model)} ${getShortName(model)} | ${fmt(info.input_tokens)} | ${fmt(info.output_tokens)} | ${fmt(total)} | ${info.turns} | \`${makeBar(pct)}\` ${pct}% |`;
+                return `| ${getIcon(model)} ${getShortName(model)} | ${fmt(info.input_tokens)} | ${fmt(info.output_tokens)} | ${fmt(total)} | ${info.api_calls} | \`${makeBar(pct)}\` ${pct}% |`;
               }).join('\n');
 
             // ─── Session rows ───
@@ -309,7 +310,7 @@ jobs:
                 const sessionModels = Object.keys(s.models || {}).map(m => `${getIcon(m)} ${getShortName(m)}`).join(', ');
                 const ts = (s.timestamp || '').slice(0, 16);
                 const tool = s.tool || 'claude-code';
-                return `| ${i + 1} | ${getToolIcon(tool)} ${getToolName(tool)} | ${ts} | ${fmt(s.input_tokens || 0)} | ${fmt(s.output_tokens || 0)} | ${s.turns || 0} | ${sessionModels} |`;
+                return `| ${i + 1} | ${getToolIcon(tool)} ${getToolName(tool)} | ${ts} | ${fmt(s.input_tokens || 0)} | ${fmt(s.output_tokens || 0)} | ${s.turns || 0} | ${s.api_calls || s.turns || 0} | ${sessionModels} |`;
               }).join('\n');
 
             // ─── File rows ───
@@ -332,8 +333,8 @@ jobs:
               `| **Total** | **${totalLines}** |`,
               '',
               '### 🧠 Models Used',
-              '| Model | Input | Output | Total | Turns | Usage |',
-              '|-------|-------|--------|-------|-------|-------|',
+              '| Model | Input | Output | Total | API calls | Usage |',
+              '|-------|-------|--------|-------|-----------|-------|',
               modelRows,
               '',
               '### 🔥 Token Usage',
@@ -346,11 +347,12 @@ jobs:
               `| **Total tokens** | **${fmt(totalTokens)}** |`,
               `| 💰 Estimated cost | **${fmtCost(totalCost)}** |`,
               `| 🔄 Total turns | ${totalTurns} |`,
+              `| 📡 API calls | ${totalApiCalls} |`,
               `| 📋 Sessions | ${allSessions.length} |`,
               '',
               '<details><summary>📋 Session Breakdown</summary>\n',
-              '| # | Tool | Timestamp | Input | Output | Turns | Models |',
-              '|---|------|-----------|-------|--------|-------|--------|',
+              '| # | Tool | Timestamp | Input | Output | Turns | API calls | Models |',
+              '|---|------|-----------|-------|--------|-------|-----------|--------|',
               sessionRows,
               '\n</details>',
               '',
