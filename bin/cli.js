@@ -51,6 +51,10 @@ function repoRoot() {
 
 function detectBaseBranch() {
   try {
+    const configured = execSync('git config gitprint.baseBranch', { encoding: 'utf8', stdio: 'pipe' }).trim();
+    if (configured) return configured;
+  } catch {}
+  try {
     execSync('git show-ref --verify --quiet refs/remotes/origin/staging', { stdio: 'pipe' });
     return 'staging';
   } catch {}
@@ -602,6 +606,7 @@ async function init() {
   console.log('');
 
   const base = await ask(`  Base branch for PRs [${detected}]: `, detected);
+  execSync(`git config gitprint.baseBranch ${base}`, { stdio: 'pipe' });
   console.log(`   Base branch: ${GREEN}${base}${NC}`);
   console.log('');
 
@@ -962,6 +967,9 @@ function uninstall() {
     fs.unlinkSync(workflowPath);
     console.log(`  ${GREEN}+${NC} Removed .github/workflows/gitprint.yml`);
   }
+
+  // Remove git config
+  try { execSync('git config --unset gitprint.baseBranch', { stdio: 'pipe' }); } catch {}
 
   // Clean up .github/hooks/ if empty
   const ghHooksDir = path.join(root, '.github', 'hooks');
