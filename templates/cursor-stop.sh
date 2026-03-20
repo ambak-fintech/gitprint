@@ -45,7 +45,7 @@ STATS=$(node -e "
     .split('\n')
     .filter(Boolean);
 
-  let inputTokens = 0, outputTokens = 0, cacheCreation = 0, cacheRead = 0, turns = 0;
+  let inputTokens = 0, outputTokens = 0, cacheCreation = 0, cacheRead = 0, turns = 0, apiCalls = 0;
   const models = {};
   const fileLineStats = {};
 
@@ -71,6 +71,9 @@ STATS=$(node -e "
       const entry = JSON.parse(line);
       if (entry.isSidechain || entry.isApiErrorMessage) continue;
 
+      // Count user messages as turns
+      if (entry.type === 'human') turns++;
+
       // Token tracking
       if (entry.type === 'assistant' && entry.message?.usage) {
         const u = entry.message.usage;
@@ -83,13 +86,13 @@ STATS=$(node -e "
         outputTokens += out;
         cacheCreation += cc;
         cacheRead += cr;
-        turns++;
+        apiCalls++;
 
         const model = entry.model || entry.message?.model || 'unknown';
-        if (!models[model]) models[model] = { input_tokens: 0, output_tokens: 0, turns: 0 };
+        if (!models[model]) models[model] = { input_tokens: 0, output_tokens: 0, api_calls: 0 };
         models[model].input_tokens += inp + cc + cr;
         models[model].output_tokens += out;
-        models[model].turns++;
+        models[model].api_calls++;
       }
 
       // File + line tracking from tool_use blocks
@@ -186,6 +189,7 @@ STATS=$(node -e "
     cache_read_tokens: cacheRead,
     estimated_cost: Math.round(estimatedCost * 10000) / 10000,
     turns,
+    api_calls: apiCalls,
     models,
     ai_files: aiFiles
   }));

@@ -61,6 +61,7 @@ STATS=$(node -e "
     cache_read_tokens: 0,
     estimated_cost: 0,
     turns: 0,
+    api_calls: 0,
     models: {},
     ai_files: aiFiles
   }));

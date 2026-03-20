@@ -38,6 +38,7 @@ describe('Gemini CLI hook (gemini-stop.sh)', () => {
     runHook('gemini-stop.sh', { transcript_path: transcript, session_id: 'gem-1' }, { cwd: dir });
     const note = readGitNote(dir);
     assert.strictEqual(note.sessions[0].turns, 2);
+    assert.strictEqual(note.sessions[0].api_calls, 2);
   });
 
   it('handles replace tool name', () => {

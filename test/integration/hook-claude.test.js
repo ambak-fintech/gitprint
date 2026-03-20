@@ -35,6 +35,7 @@ describe('Claude Code hook (stop.sh)', () => {
     runHook('stop.sh', { transcript_path: transcript, session_id: 'test-123' }, { cwd: dir });
     const note = readGitNote(dir);
     assert.strictEqual(note.sessions[0].turns, 2);
+    assert.strictEqual(note.sessions[0].api_calls, 2);
   });
 
   it('tracks model names and per-model tokens', () => {
@@ -43,7 +44,7 @@ describe('Claude Code hook (stop.sh)', () => {
     const note = readGitNote(dir);
     const models = note.sessions[0].models;
     assert.ok(models['claude-sonnet-4-6']);
-    assert.strictEqual(models['claude-sonnet-4-6'].turns, 2);
+    assert.strictEqual(models['claude-sonnet-4-6'].api_calls, 2);
   });
 
   it('extracts Edit tool_use line counts', () => {
