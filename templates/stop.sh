@@ -53,11 +53,20 @@ STATS=$(node -e "
     return s.length === 0 ? 0 : s.split('\n').length;
   };
 
+  const repoRoot = (() => { try { return require('child_process').execSync('git rev-parse --show-toplevel', { encoding: 'utf8' }).trim(); } catch { return process.cwd(); } })();
   const trackFile = (fp, added, removed) => {
     if (!fp) return;
     fp = fp.replace(/^\\.\//, '');
-    const cwd = process.cwd();
-    if (fp.startsWith(cwd + '/')) fp = fp.slice(cwd.length + 1);
+    // Normalize absolute paths to be relative to git repo root
+    if (fp.startsWith('/')) {
+      if (fp.startsWith(repoRoot + '/')) fp = fp.slice(repoRoot.length + 1);
+      else return; // outside the repo — skip
+    } else {
+      // Relative path: resolve against CWD, then make relative to repo root
+      const abs = require('path').resolve(process.cwd(), fp);
+      if (abs.startsWith(repoRoot + '/')) fp = abs.slice(repoRoot.length + 1);
+      // else keep as-is (already relative to repo root)
+    }
     if (fp.includes('.ai-stats') || fp.includes('node_modules')) return;
     if (!fileLineStats[fp]) fileLineStats[fp] = { added: 0, removed: 0 };
     fileLineStats[fp].added += added;

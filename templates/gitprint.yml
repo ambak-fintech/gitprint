@@ -191,7 +191,12 @@ jobs:
               const totalFileLines = (parseInt(added) || 0) + (parseInt(removed) || 0);
               totalLines += totalFileLines;
 
-              const aiStat = allFileStats[file];
+              // Exact match first, then suffix match for monorepo path mismatches
+              let aiStat = allFileStats[file];
+              if (!aiStat) {
+                const match = Object.keys(allFileStats).find(k => file.endsWith('/' + k) || k.endsWith('/' + file));
+                if (match) aiStat = allFileStats[match];
+              }
               let fileAiLines = 0;
 
               if (aiStat) {

@@ -88,11 +88,18 @@ node -e "
     pending = {};
   }
 
+  const repoRoot = (() => { try { return require('child_process').execSync('git rev-parse --show-toplevel', { encoding: 'utf8' }).trim(); } catch { return toolData.cwd || process.cwd(); } })();
   const trackFile = (fp, added, removed) => {
     if (!fp) return;
     fp = fp.replace(/^\.\//, '');
-    const cwd = toolData.cwd || process.cwd();
-    if (fp.startsWith(cwd + '/')) fp = fp.slice(cwd.length + 1);
+    if (fp.startsWith('/')) {
+      if (fp.startsWith(repoRoot + '/')) fp = fp.slice(repoRoot.length + 1);
+      else return;
+    } else {
+      const cwd = toolData.cwd || process.cwd();
+      const abs = require('path').resolve(cwd, fp);
+      if (abs.startsWith(repoRoot + '/')) fp = abs.slice(repoRoot.length + 1);
+    }
     if (fp.includes('node_modules')) return;
     if (!pending[fp]) pending[fp] = { added: 0, removed: 0 };
     pending[fp].added += added;
