@@ -1,5 +1,7 @@
 # Gitprint
 
+[![gitcgr](https://gitcgr.com/badge/ambak-fintech/gitprint.svg)](https://gitcgr.com/ambak-fintech/gitprint)
+
 AI code attribution for pull requests — powered by Git Notes.
 
 Track how much code in your PRs was written by AI tools like Claude Code, Cursor, Copilot, Gemini CLI, Windsurf, Augment Code, and OpenCode.
