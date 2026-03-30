@@ -64,6 +64,9 @@ jobs:
 
       - name: Post AI Contribution Report
         uses: actions/github-script@v7
+        env:
+          AI_PLATFORM_URL: ${{ secrets.AI_PLATFORM_URL }}
+          AI_PLATFORM_KEY: ${{ secrets.AI_PLATFORM_KEY }}
         with:
           script: |
             const { execSync } = require('child_process');
@@ -383,4 +386,92 @@ jobs:
                 owner: context.repo.owner, repo: context.repo.repo,
                 issue_number: pr.number, body,
               });
+            }
+
+            // ─── POST to AI Platform (optional) ───
+            const platformUrl = process.env.AI_PLATFORM_URL;
+            const platformKey = process.env.AI_PLATFORM_KEY;
+
+            if (platformUrl && platformKey) {
+              // Build per-commit data: sha, message, author, timestamp
+              const commitData = [];
+              for (const sha of commits) {
+                try {
+                  const info = execSync(
+                    `git log -1 --format="%s|||%an|||%aI" ${sha}`,
+                    { encoding: 'utf8' }
+                  ).trim().split('|||');
+                  commitData.push({
+                    sha,
+                    message: info[0] || '',
+                    author: context.actor,
+                    timestamp: info[2] || new Date().toISOString(),
+                  });
+                } catch (e) {
+                  commitData.push({ sha, message: '', author: context.actor, timestamp: new Date().toISOString() });
+                }
+              }
+
+              // Build files array: per-file total + AI lines
+              const filesPayload = fileStats.map(f => ({
+                file: f.file,
+                total_added: f.lines,
+                total_removed: 0,
+                ai_lines_added: f.aiLines,
+                ai_lines_removed: 0,
+                human_lines_added: f.humanLines,
+                human_lines_removed: 0,
+              }));
+
+              // Collect distinct tools used across all sessions
+              const tools = [...new Set(allSessions.map(s => s.tool).filter(Boolean))];
+
+              const payload = {
+                repo: `${context.repo.owner}/${context.repo.repo}`,
+                branch: currentBranch,
+                sender: context.actor,
+                sessions: allSessions,
+                files: filesPayload,
+                commits: commitData,
+                tools,
+                totalCost,
+                totalTokens,
+                prNumber: pr ? pr.number : null,
+                prState: pr ? pr.state : null,
+              };
+
+              try {
+                const https = require('https');
+                const reqBody = JSON.stringify(payload);
+                const url = new URL(`${platformUrl}/api/ingest/push`);
+
+                await new Promise((resolve, reject) => {
+                  const req = https.request({
+                    hostname: url.hostname,
+                    port: url.port || 443,
+                    path: url.pathname,
+                    method: 'POST',
+                    headers: {
+                      'Content-Type': 'application/json',
+                      'Authorization': `Bearer ${platformKey}`,
+                      'Content-Length': Buffer.byteLength(reqBody),
+                    },
+                  }, (res) => {
+                    let data = '';
+                    res.on('data', chunk => data += chunk);
+                    res.on('end', () => {
+                      console.log(`Platform ingest: ${res.statusCode} — ${data.slice(0, 200)}`);
+                      resolve();
+                    });
+                  });
+                  req.on('error', (e) => {
+                    console.log('Platform ingest request error (non-blocking):', e.message);
+                    resolve();
+                  });
+                  req.write(reqBody);
+                  req.end();
+                });
+              } catch (e) {
+                console.log('Platform ingest failed (non-blocking):', e.message);
+              }
             }
