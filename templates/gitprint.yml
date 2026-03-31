@@ -64,6 +64,9 @@ jobs:
 
       - name: Post AI Contribution Report
         uses: actions/github-script@v7
+        env:
+          AI_PLATFORM_URL: ${{ secrets.AI_PLATFORM_URL }}
+          AI_PLATFORM_KEY: ${{ secrets.AI_PLATFORM_KEY }}
         with:
           script: |
             const { execSync } = require('child_process');
@@ -92,15 +95,22 @@ jobs:
 
             // ─── Read all Gitprint notes from PR commits ───
             let commits;
+            let commitDetails = [];
             try {
-              commits = execSync(
-                `git log origin/${baseBranch}..HEAD --format="%H"`,
+              const commitLog = execSync(
+                `git log origin/${baseBranch}..HEAD --format="%H|||%s|||%an|||%aI"`,
                 { encoding: 'utf8' }
               ).trim().split('\n').filter(Boolean);
+              commits = commitLog.map(l => l.split('|||')[0]);
+              commitDetails = commitLog.map(l => {
+                const [sha, message, author, timestamp] = l.split('|||');
+                return { sha, message: message || '', author: author || context.actor, timestamp: timestamp || new Date().toISOString() };
+              });
             } catch (e) { console.log('No commits in range'); return; }
 
             const allSessions = [];
             const allFileStats = {};
+            const aiCommitShas = new Set();
 
             for (const sha of commits) {
               try {
@@ -111,6 +121,7 @@ jobs:
                 if (!note) continue;
 
                 const data = JSON.parse(note);
+                if ((data.sessions || []).length > 0) aiCommitShas.add(sha);
 
                 // Merge sessions
                 for (const s of (data.sessions || [])) {
@@ -217,6 +228,8 @@ jobs:
 
               fileStats.push({
                 file, lines: totalFileLines,
+                linesAdded: parseInt(added) || 0,
+                linesRemoved: parseInt(removed) || 0,
                 aiLines: fileAiLines, humanLines: fileHumanLines,
                 aiPct, attribution,
               });
@@ -390,4 +403,57 @@ jobs:
                 owner: context.repo.owner, repo: context.repo.repo,
                 issue_number: pr.number, body,
               });
+            }
+
+            // ─── Post to AI Engineering Platform (if configured) ───
+            const platformUrl = process.env.AI_PLATFORM_URL;
+            const platformKey = process.env.AI_PLATFORM_KEY;
+
+            if (platformUrl && platformKey) {
+              try {
+                const platformPayload = {
+                  repo: `${context.repo.owner}/${context.repo.repo}`,
+                  branch: currentBranch,
+                  sender: context.actor,
+                  sessions: allSessions,
+                  files: fileStats.map(f => ({
+                    file: f.file,
+                    total_added: f.linesAdded,
+                    total_removed: f.linesRemoved,
+                    ai_lines_added: f.aiLines,
+                    ai_lines_removed: 0,
+                    human_lines_added: f.humanLines,
+                    human_lines_removed: 0,
+                  })),
+                  commits: commitDetails.map(c => ({
+                    sha: c.sha,
+                    message: c.message,
+                    author: c.author,
+                    timestamp: c.timestamp,
+                    hasAi: aiCommitShas.has(c.sha),
+                  })),
+                  totalCost,
+                  totalTokens,
+                  tools: [...new Set(allSessions.map(s => s.tool || 'claude-code').filter(Boolean))],
+                };
+
+                const res = await fetch(`${platformUrl}/api/ingest/push`, {
+                  method: 'POST',
+                  headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${platformKey}`,
+                  },
+                  body: JSON.stringify(platformPayload),
+                });
+
+                if (res.ok) {
+                  const result = await res.json();
+                  console.log(`[AI Platform] ✅ Ingested: ${result.commits} commits, ${result.sessions} sessions for ${currentBranch}`);
+                } else {
+                  const text = await res.text();
+                  console.log(`[AI Platform] ⚠️ Response ${res.status}: ${text}`);
+                }
+              } catch (e) {
+                console.log(`[AI Platform] ⚠️ Failed to post to platform: ${e.message}`);
+              }
             }
