@@ -95,15 +95,22 @@ jobs:
 
             // ─── Read all Gitprint notes from PR commits ───
             let commits;
+            let commitDetails = [];
             try {
-              commits = execSync(
-                `git log origin/${baseBranch}..HEAD --format="%H"`,
+              const commitLog = execSync(
+                `git log origin/${baseBranch}..HEAD --format="%H|||%s|||%an|||%aI"`,
                 { encoding: 'utf8' }
               ).trim().split('\n').filter(Boolean);
+              commits = commitLog.map(l => l.split('|||')[0]);
+              commitDetails = commitLog.map(l => {
+                const [sha, message, author, timestamp] = l.split('|||');
+                return { sha, message: message || '', author: author || context.actor, timestamp: timestamp || new Date().toISOString() };
+              });
             } catch (e) { console.log('No commits in range'); return; }
 
             const allSessions = [];
             const allFileStats = {};
+            const aiCommitShas = new Set();
 
             for (const sha of commits) {
               try {
@@ -114,6 +121,7 @@ jobs:
                 if (!note) continue;
 
                 const data = JSON.parse(note);
+                if ((data.sessions || []).length > 0) aiCommitShas.add(sha);
 
                 // Merge sessions
                 for (const s of (data.sessions || [])) {
@@ -140,6 +148,7 @@ jobs:
             const totalCacheRead = allSessions.reduce((s, x) => s + (x.cache_read_tokens || 0), 0);
             const totalTokens = totalInputTokens + totalOutputTokens + totalCacheCreation + totalCacheRead;
             const totalTurns = allSessions.reduce((s, x) => s + (x.turns || 0), 0);
+            const totalApiCalls = allSessions.reduce((s, x) => s + (x.api_calls || x.turns || 0), 0);
 
             if (allSessions.length === 0 && totalTokens === 0) return;
 
@@ -193,7 +202,12 @@ jobs:
               const totalFileLines = (parseInt(added) || 0) + (parseInt(removed) || 0);
               totalLines += totalFileLines;
 
-              const aiStat = allFileStats[file];
+              // Exact match first, then suffix match for monorepo path mismatches
+              let aiStat = allFileStats[file];
+              if (!aiStat) {
+                const match = Object.keys(allFileStats).find(k => file.endsWith('/' + k) || k.endsWith('/' + file));
+                if (match) aiStat = allFileStats[match];
+              }
               let fileAiLines = 0;
 
               if (aiStat) {
@@ -214,6 +228,8 @@ jobs:
 
               fileStats.push({
                 file, lines: totalFileLines,
+                linesAdded: parseInt(added) || 0,
+                linesRemoved: parseInt(removed) || 0,
                 aiLines: fileAiLines, humanLines: fileHumanLines,
                 aiPct, attribution,
               });
@@ -270,10 +286,10 @@ jobs:
             const modelAgg = {};
             for (const s of allSessions) {
               for (const [model, info] of Object.entries(s.models || {})) {
-                if (!modelAgg[model]) modelAgg[model] = { input_tokens: 0, output_tokens: 0, turns: 0 };
+                if (!modelAgg[model]) modelAgg[model] = { input_tokens: 0, output_tokens: 0, api_calls: 0 };
                 modelAgg[model].input_tokens += info.input_tokens || 0;
                 modelAgg[model].output_tokens += info.output_tokens || 0;
-                modelAgg[model].turns += info.turns || 0;
+                modelAgg[model].api_calls += info.api_calls || info.turns || 0;
               }
             }
 
@@ -282,7 +298,7 @@ jobs:
               .map(([model, info]) => {
                 const total = info.input_tokens + info.output_tokens;
                 const pct = totalTokens > 0 ? Math.round((total / totalTokens) * 100) : 0;
-                return `| ${getIcon(model)} ${getShortName(model)} | ${fmt(info.input_tokens)} | ${fmt(info.output_tokens)} | ${fmt(total)} | ${info.turns} | \`${makeBar(pct)}\` ${pct}% |`;
+                return `| ${getIcon(model)} ${getShortName(model)} | ${fmt(info.input_tokens)} | ${fmt(info.output_tokens)} | ${fmt(total)} | ${info.api_calls} | \`${makeBar(pct)}\` ${pct}% |`;
               }).join('\n');
 
             // ─── Session rows ───
@@ -312,7 +328,7 @@ jobs:
                 const sessionModels = Object.keys(s.models || {}).map(m => `${getIcon(m)} ${getShortName(m)}`).join(', ');
                 const ts = (s.timestamp || '').slice(0, 16);
                 const tool = s.tool || 'claude-code';
-                return `| ${i + 1} | ${getToolIcon(tool)} ${getToolName(tool)} | ${ts} | ${fmt(s.input_tokens || 0)} | ${fmt(s.output_tokens || 0)} | ${s.turns || 0} | ${sessionModels} |`;
+                return `| ${i + 1} | ${getToolIcon(tool)} ${getToolName(tool)} | ${ts} | ${fmt(s.input_tokens || 0)} | ${fmt(s.output_tokens || 0)} | ${s.turns || 0} | ${s.api_calls || s.turns || 0} | ${sessionModels} |`;
               }).join('\n');
 
             // ─── File rows ───
@@ -335,8 +351,8 @@ jobs:
               `| **Total** | **${totalLines}** |`,
               '',
               '### 🧠 Models Used',
-              '| Model | Input | Output | Total | Turns | Usage |',
-              '|-------|-------|--------|-------|-------|-------|',
+              '| Model | Input | Output | Total | API calls | Usage |',
+              '|-------|-------|--------|-------|-----------|-------|',
               modelRows,
               '',
               '### 🔥 Token Usage',
@@ -349,11 +365,12 @@ jobs:
               `| **Total tokens** | **${fmt(totalTokens)}** |`,
               `| 💰 Estimated cost | **${fmtCost(totalCost)}** |`,
               `| 🔄 Total turns | ${totalTurns} |`,
+              `| 📡 API calls | ${totalApiCalls} |`,
               `| 📋 Sessions | ${allSessions.length} |`,
               '',
               '<details><summary>📋 Session Breakdown</summary>\n',
-              '| # | Tool | Timestamp | Input | Output | Turns | Models |',
-              '|---|------|-----------|-------|--------|-------|--------|',
+              '| # | Tool | Timestamp | Input | Output | Turns | API calls | Models |',
+              '|---|------|-----------|-------|--------|-------|-----------|--------|',
               sessionRows,
               '\n</details>',
               '',
@@ -388,90 +405,55 @@ jobs:
               });
             }
 
-            // ─── POST to AI Platform (optional) ───
+            // ─── Post to AI Engineering Platform (if configured) ───
             const platformUrl = process.env.AI_PLATFORM_URL;
             const platformKey = process.env.AI_PLATFORM_KEY;
 
             if (platformUrl && platformKey) {
-              // Build per-commit data: sha, message, author, timestamp
-              const commitData = [];
-              for (const sha of commits) {
-                try {
-                  const info = execSync(
-                    `git log -1 --format="%s|||%an|||%aI" ${sha}`,
-                    { encoding: 'utf8' }
-                  ).trim().split('|||');
-                  commitData.push({
-                    sha,
-                    message: info[0] || '',
-                    author: context.actor,
-                    timestamp: info[2] || new Date().toISOString(),
-                  });
-                } catch (e) {
-                  commitData.push({ sha, message: '', author: context.actor, timestamp: new Date().toISOString() });
-                }
-              }
-
-              // Build files array: per-file total + AI lines
-              const filesPayload = fileStats.map(f => ({
-                file: f.file,
-                total_added: f.lines,
-                total_removed: 0,
-                ai_lines_added: f.aiLines,
-                ai_lines_removed: 0,
-                human_lines_added: f.humanLines,
-                human_lines_removed: 0,
-              }));
-
-              // Collect distinct tools used across all sessions
-              const tools = [...new Set(allSessions.map(s => s.tool).filter(Boolean))];
-
-              const payload = {
-                repo: `${context.repo.owner}/${context.repo.repo}`,
-                branch: currentBranch,
-                sender: context.actor,
-                sessions: allSessions,
-                files: filesPayload,
-                commits: commitData,
-                tools,
-                totalCost,
-                totalTokens,
-                prNumber: pr ? pr.number : null,
-                prState: pr ? pr.state : null,
-              };
-
               try {
-                const https = require('https');
-                const reqBody = JSON.stringify(payload);
-                const url = new URL(`${platformUrl}/api/ingest/push`);
+                const platformPayload = {
+                  repo: `${context.repo.owner}/${context.repo.repo}`,
+                  branch: currentBranch,
+                  sender: context.actor,
+                  sessions: allSessions,
+                  files: fileStats.map(f => ({
+                    file: f.file,
+                    total_added: f.linesAdded,
+                    total_removed: f.linesRemoved,
+                    ai_lines_added: f.aiLines,
+                    ai_lines_removed: 0,
+                    human_lines_added: f.humanLines,
+                    human_lines_removed: 0,
+                  })),
+                  commits: commitDetails.map(c => ({
+                    sha: c.sha,
+                    message: c.message,
+                    author: c.author,
+                    timestamp: c.timestamp,
+                    hasAi: aiCommitShas.has(c.sha),
+                  })),
+                  totalCost,
+                  totalTokens,
+                  tools: [...new Set(allSessions.map(s => s.tool || 'claude-code').filter(Boolean))],
+                };
 
-                await new Promise((resolve, reject) => {
-                  const req = https.request({
-                    hostname: url.hostname,
-                    port: url.port || 443,
-                    path: url.pathname,
-                    method: 'POST',
-                    headers: {
-                      'Content-Type': 'application/json',
-                      'Authorization': `Bearer ${platformKey}`,
-                      'Content-Length': Buffer.byteLength(reqBody),
-                    },
-                  }, (res) => {
-                    let data = '';
-                    res.on('data', chunk => data += chunk);
-                    res.on('end', () => {
-                      console.log(`Platform ingest: ${res.statusCode} — ${data.slice(0, 200)}`);
-                      resolve();
-                    });
-                  });
-                  req.on('error', (e) => {
-                    console.log('Platform ingest request error (non-blocking):', e.message);
-                    resolve();
-                  });
-                  req.write(reqBody);
-                  req.end();
+                const res = await fetch(`${platformUrl}/api/ingest/push`, {
+                  method: 'POST',
+                  headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${platformKey}`,
+                  },
+                  body: JSON.stringify(platformPayload),
                 });
+
+                if (res.ok) {
+                  const result = await res.json();
+                  console.log(`[AI Platform] ✅ Ingested: ${result.commits} commits, ${result.sessions} sessions for ${currentBranch}`);
+                } else {
+                  const text = await res.text();
+                  console.log(`[AI Platform] ⚠️ Response ${res.status}: ${text}`);
+                }
               } catch (e) {
-                console.log('Platform ingest failed (non-blocking):', e.message);
+                console.log(`[AI Platform] ⚠️ Failed to post to platform: ${e.message}`);
               }
             }
