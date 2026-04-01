@@ -64,9 +64,6 @@ jobs:
 
       - name: Post AI Contribution Report
         uses: actions/github-script@v7
-        env:
-          AI_PLATFORM_URL: ${{ secrets.AI_PLATFORM_URL }}
-          AI_PLATFORM_KEY: ${{ secrets.AI_PLATFORM_KEY }}
         with:
           script: |
             const { execSync } = require('child_process');
@@ -104,6 +101,9 @@ jobs:
 
             const allSessions = [];
             const allFileStats = {};
+            const aiCommitShas = new Set();
+            // Per-commit note data for platform payload
+            const perCommitNotes = {};
 
             for (const sha of commits) {
               try {
@@ -115,18 +115,38 @@ jobs:
 
                 const data = JSON.parse(note);
 
-                // Merge sessions
+                // Store per-commit note data for platform payload
+                perCommitNotes[sha] = data;
+
+                // Merge sessions (deduplicate by session_id, sum delta tokens)
                 for (const s of (data.sessions || [])) {
-                  if (!allSessions.find(x => x.session_id === s.session_id)) {
-                    allSessions.push(s);
+                  const idx = allSessions.findIndex(x => x.session_id === s.session_id);
+                  if (idx === -1) {
+                    allSessions.push({ ...s });
+                  } else {
+                    // Sum delta tokens from this commit into the session aggregate
+                    const existing = allSessions[idx];
+                    existing.input_tokens = (existing.input_tokens || 0) + (s.input_tokens || 0);
+                    existing.output_tokens = (existing.output_tokens || 0) + (s.output_tokens || 0);
+                    existing.cache_creation_tokens = (existing.cache_creation_tokens || 0) + (s.cache_creation_tokens || 0);
+                    existing.cache_read_tokens = (existing.cache_read_tokens || 0) + (s.cache_read_tokens || 0);
+                    existing.estimated_cost = (existing.estimated_cost || 0) + (s.estimated_cost || 0);
+                    existing.turns = (existing.turns || 0) + (s.turns || 0);
+                    existing.api_calls = (existing.api_calls || 0) + (s.api_calls || 0);
+                    // Merge models
+                    for (const [model, info] of Object.entries(s.models || {})) {
+                      if (!existing.models) existing.models = {};
+                      if (!existing.models[model]) existing.models[model] = { input_tokens: 0, output_tokens: 0, api_calls: 0 };
+                      existing.models[model].input_tokens += info.input_tokens || 0;
+                      existing.models[model].output_tokens += info.output_tokens || 0;
+                      existing.models[model].api_calls += info.api_calls || 0;
+                    }
                   }
                 }
 
-                // Merge file stats (accumulate)
+                // Sum file stats (each note is a delta, so simple sum is correct)
                 for (const f of (data.ai_files || [])) {
-                  if (!allFileStats[f.file]) {
-                    allFileStats[f.file] = { ai_lines_added: 0, ai_lines_removed: 0 };
-                  }
+                  if (!allFileStats[f.file]) allFileStats[f.file] = { ai_lines_added: 0, ai_lines_removed: 0 };
                   allFileStats[f.file].ai_lines_added += f.ai_lines_added || 0;
                   allFileStats[f.file].ai_lines_removed += f.ai_lines_removed || 0;
                 }
@@ -140,6 +160,7 @@ jobs:
             const totalCacheRead = allSessions.reduce((s, x) => s + (x.cache_read_tokens || 0), 0);
             const totalTokens = totalInputTokens + totalOutputTokens + totalCacheCreation + totalCacheRead;
             const totalTurns = allSessions.reduce((s, x) => s + (x.turns || 0), 0);
+            const totalApiCalls = allSessions.reduce((s, x) => s + (x.api_calls || x.turns || 0), 0);
 
             if (allSessions.length === 0 && totalTokens === 0) return;
 
@@ -185,15 +206,32 @@ jobs:
               `git diff --numstat origin/${baseBranch}...HEAD`
             ).toString();
 
+            // Exclude config/tooling files that aren't real code contributions
+            const EXCLUDE_PATTERNS = [
+              /^\.claude\//,
+              /^\.github\//,
+              /^\.gitprint\//,
+              /^\.cursor\//,
+              /^\.vscode\//,
+              /^\.idea\//,
+            ];
+            const isExcluded = (f) => EXCLUDE_PATTERNS.some(p => p.test(f));
+
             let totalLines = 0, aiLines = 0, humanLines = 0;
             const fileStats = [];
 
             diff.split('\n').filter(Boolean).forEach(line => {
               const [added, removed, file] = line.split('\t');
+              if (isExcluded(file)) return;
               const totalFileLines = (parseInt(added) || 0) + (parseInt(removed) || 0);
               totalLines += totalFileLines;
 
-              const aiStat = allFileStats[file];
+              // Exact match first, then suffix match for monorepo path mismatches
+              let aiStat = allFileStats[file];
+              if (!aiStat) {
+                const match = Object.keys(allFileStats).find(k => file.endsWith('/' + k) || k.endsWith('/' + file));
+                if (match) aiStat = allFileStats[match];
+              }
               let fileAiLines = 0;
 
               if (aiStat) {
@@ -270,10 +308,10 @@ jobs:
             const modelAgg = {};
             for (const s of allSessions) {
               for (const [model, info] of Object.entries(s.models || {})) {
-                if (!modelAgg[model]) modelAgg[model] = { input_tokens: 0, output_tokens: 0, turns: 0 };
+                if (!modelAgg[model]) modelAgg[model] = { input_tokens: 0, output_tokens: 0, api_calls: 0 };
                 modelAgg[model].input_tokens += info.input_tokens || 0;
                 modelAgg[model].output_tokens += info.output_tokens || 0;
-                modelAgg[model].turns += info.turns || 0;
+                modelAgg[model].api_calls += info.api_calls || info.turns || 0;
               }
             }
 
@@ -282,7 +320,7 @@ jobs:
               .map(([model, info]) => {
                 const total = info.input_tokens + info.output_tokens;
                 const pct = totalTokens > 0 ? Math.round((total / totalTokens) * 100) : 0;
-                return `| ${getIcon(model)} ${getShortName(model)} | ${fmt(info.input_tokens)} | ${fmt(info.output_tokens)} | ${fmt(total)} | ${info.turns} | \`${makeBar(pct)}\` ${pct}% |`;
+                return `| ${getIcon(model)} ${getShortName(model)} | ${fmt(info.input_tokens)} | ${fmt(info.output_tokens)} | ${fmt(total)} | ${info.api_calls} | \`${makeBar(pct)}\` ${pct}% |`;
               }).join('\n');
 
             // ─── Session rows ───
@@ -312,7 +350,7 @@ jobs:
                 const sessionModels = Object.keys(s.models || {}).map(m => `${getIcon(m)} ${getShortName(m)}`).join(', ');
                 const ts = (s.timestamp || '').slice(0, 16);
                 const tool = s.tool || 'claude-code';
-                return `| ${i + 1} | ${getToolIcon(tool)} ${getToolName(tool)} | ${ts} | ${fmt(s.input_tokens || 0)} | ${fmt(s.output_tokens || 0)} | ${s.turns || 0} | ${sessionModels} |`;
+                return `| ${i + 1} | ${getToolIcon(tool)} ${getToolName(tool)} | ${ts} | ${fmt(s.input_tokens || 0)} | ${fmt(s.output_tokens || 0)} | ${s.turns || 0} | ${s.api_calls || s.turns || 0} | ${sessionModels} |`;
               }).join('\n');
 
             // ─── File rows ───
@@ -335,8 +373,8 @@ jobs:
               `| **Total** | **${totalLines}** |`,
               '',
               '### 🧠 Models Used',
-              '| Model | Input | Output | Total | Turns | Usage |',
-              '|-------|-------|--------|-------|-------|-------|',
+              '| Model | Input | Output | Total | API calls | Usage |',
+              '|-------|-------|--------|-------|-----------|-------|',
               modelRows,
               '',
               '### 🔥 Token Usage',
@@ -349,11 +387,12 @@ jobs:
               `| **Total tokens** | **${fmt(totalTokens)}** |`,
               `| 💰 Estimated cost | **${fmtCost(totalCost)}** |`,
               `| 🔄 Total turns | ${totalTurns} |`,
+              `| 📡 API calls | ${totalApiCalls} |`,
               `| 📋 Sessions | ${allSessions.length} |`,
               '',
               '<details><summary>📋 Session Breakdown</summary>\n',
-              '| # | Tool | Timestamp | Input | Output | Turns | Models |',
-              '|---|------|-----------|-------|--------|-------|--------|',
+              '| # | Tool | Timestamp | Input | Output | Turns | API calls | Models |',
+              '|---|------|-----------|-------|--------|-------|-----------|--------|',
               sessionRows,
               '\n</details>',
               '',
@@ -388,90 +427,85 @@ jobs:
               });
             }
 
-            // ─── POST to AI Platform (optional) ───
+            // ─── Post to AI Engineering Platform (if configured) ───
             const platformUrl = process.env.AI_PLATFORM_URL;
             const platformKey = process.env.AI_PLATFORM_KEY;
 
             if (platformUrl && platformKey) {
-              // Build per-commit data: sha, message, author, timestamp
-              const commitData = [];
-              for (const sha of commits) {
-                try {
-                  const info = execSync(
-                    `git log -1 --format="%s|||%an|||%aI" ${sha}`,
-                    { encoding: 'utf8' }
-                  ).trim().split('|||');
-                  commitData.push({
-                    sha,
-                    message: info[0] || '',
-                    author: context.actor,
-                    timestamp: info[2] || new Date().toISOString(),
-                  });
-                } catch (e) {
-                  commitData.push({ sha, message: '', author: context.actor, timestamp: new Date().toISOString() });
-                }
-              }
-
-              // Build files array: per-file total + AI lines
-              const filesPayload = fileStats.map(f => ({
-                file: f.file,
-                total_added: f.lines,
-                total_removed: 0,
-                ai_lines_added: f.aiLines,
-                ai_lines_removed: 0,
-                human_lines_added: f.humanLines,
-                human_lines_removed: 0,
-              }));
-
-              // Collect distinct tools used across all sessions
-              const tools = [...new Set(allSessions.map(s => s.tool).filter(Boolean))];
-
-              const payload = {
-                repo: `${context.repo.owner}/${context.repo.repo}`,
-                branch: currentBranch,
-                sender: context.actor,
-                sessions: allSessions,
-                files: filesPayload,
-                commits: commitData,
-                tools,
-                totalCost,
-                totalTokens,
-                prNumber: pr ? pr.number : null,
-                prState: pr ? pr.state : null,
-              };
-
               try {
-                const https = require('https');
-                const reqBody = JSON.stringify(payload);
-                const url = new URL(`${platformUrl}/api/ingest/push`);
+                const platformPayload = {
+                  repo: `${context.repo.owner}/${context.repo.repo}`,
+                  branch: currentBranch,
+                  sender: context.actor,
+                  sessions: allSessions,
+                  files: fileStats.map(f => ({
+                    file: f.file,
+                    total_added: f.linesAdded,
+                    total_removed: f.linesRemoved,
+                    ai_lines_added: f.aiLines,
+                    ai_lines_removed: 0,
+                    human_lines_added: f.humanLines,
+                    human_lines_removed: 0,
+                  })),
+                  commits: commitDetails.map(c => {
+                    // Per-commit files from that commit's own note
+                    const note = perCommitNotes[c.sha];
+                    const commitAiFiles = note ? (note.ai_files || []) : [];
+                    // Get per-commit diff (files changed in this specific commit)
+                    let commitFiles = [];
+                    try {
+                      const cdiff = execSync(`git diff --numstat ${c.sha}^..${c.sha} 2>/dev/null`).toString();
+                      cdiff.split('\n').filter(Boolean).forEach(line => {
+                        const [added, removed, file] = line.split('\t');
+                        if (!file || isExcluded(file)) return;
+                        const linesAdded = parseInt(added) || 0;
+                        const linesRemoved = parseInt(removed) || 0;
+                        // Find AI attribution from this commit's note
+                        const aiFile = commitAiFiles.find(f => f.file === file)
+                          || commitAiFiles.find(f => file.endsWith('/' + f.file) || f.file.endsWith('/' + file));
+                        const aiLines = aiFile
+                          ? Math.min((aiFile.ai_lines_added || 0) + (aiFile.ai_lines_removed || 0), linesAdded + linesRemoved)
+                          : 0;
+                        commitFiles.push({
+                          file,
+                          total_added: linesAdded,
+                          total_removed: linesRemoved,
+                          ai_lines_added: aiLines,
+                          ai_lines_removed: 0,
+                        });
+                      });
+                    } catch (e) { /* first commit or error — skip per-commit files */ }
+                    return {
+                      sha: c.sha,
+                      message: c.message,
+                      author: c.author,
+                      timestamp: c.timestamp,
+                      hasAi: aiCommitShas.has(c.sha),
+                      files: commitFiles,
+                    };
+                  }),
+                  totalCost,
+                  totalTokens,
+                  tools: [...new Set(allSessions.map(s => s.tool || 'claude-code').filter(Boolean))],
+                };
 
-                await new Promise((resolve, reject) => {
-                  const req = https.request({
-                    hostname: url.hostname,
-                    port: url.port || 443,
-                    path: url.pathname,
-                    method: 'POST',
-                    headers: {
-                      'Content-Type': 'application/json',
-                      'Authorization': `Bearer ${platformKey}`,
-                      'Content-Length': Buffer.byteLength(reqBody),
-                    },
-                  }, (res) => {
-                    let data = '';
-                    res.on('data', chunk => data += chunk);
-                    res.on('end', () => {
-                      console.log(`Platform ingest: ${res.statusCode} — ${data.slice(0, 200)}`);
-                      resolve();
-                    });
-                  });
-                  req.on('error', (e) => {
-                    console.log('Platform ingest request error (non-blocking):', e.message);
-                    resolve();
-                  });
-                  req.write(reqBody);
-                  req.end();
+                const res = await fetch(`${platformUrl}/api/ingest/push`, {
+                  method: 'POST',
+                  headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${platformKey}`,
+                  },
+                  body: JSON.stringify(platformPayload),
                 });
+
+                if (res.ok) {
+                  const result = await res.json();
+                  console.log(`[AI Platform] ✅ Ingested: ${result.commits} commits, ${result.sessions} sessions for ${currentBranch}`);
+                } else {
+                  const text = await res.text();
+                  console.log(`[AI Platform] ⚠️ Response ${res.status}: ${text}`);
+                }
               } catch (e) {
-                console.log('Platform ingest failed (non-blocking):', e.message);
+                console.log(`[AI Platform] ⚠️ Failed to post to platform: ${e.message}`);
               }
             }
