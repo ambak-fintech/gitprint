@@ -1,52 +1,52 @@
 #!/bin/bash
-# Gitprint — Stop Hook (Claude Code)
-# Fires when a Claude Code session ends.
-# With the post-commit hook handling per-commit attribution,
-# this hook only processes the REMAINING delta (uncommitted AI work).
-# Falls back to full parse if no checkpoint exists (backward compat).
+# Gitprint — Git Post-Commit Hook
+# Fires after every git commit. Reads the active AI session transcript,
+# computes DELTA stats since last commit, and writes a git note to HEAD.
+# This gives per-commit AI attribution without waiting for session close.
 
 # ─── Logging ───
-log() { [ "${GITPRINT_DEBUG:-0}" = "1" ] && echo "[gitprint] $*" >&2; }
-log_err() { echo "[gitprint] ERROR: $*" >&2; }
+log() { [ "${GITPRINT_DEBUG:-0}" = "1" ] && echo "[gitprint:post-commit] $*" >&2; }
+log_err() { echo "[gitprint:post-commit] ERROR: $*" >&2; }
 
-INPUT=$(cat)
+GIT_DIR=$(git rev-parse --git-dir 2>/dev/null) || exit 0
+ACTIVE_FILE="$GIT_DIR/gitprint-active.json"
+CHECKPOINT_FILE="$GIT_DIR/gitprint-checkpoint.json"
 
-TRANSCRIPT_PATH=$(echo "$INPUT" | node -e "
+# ─── Check for active AI session ───
+if [ ! -f "$ACTIVE_FILE" ]; then
+  log "no active session marker — manual commit, skipping"
+  exit 0
+fi
+
+# Read active session info
+ACTIVE=$(cat "$ACTIVE_FILE")
+TRANSCRIPT_PATH=$(echo "$ACTIVE" | node -e "
   let d='';process.stdin.on('data',c=>d+=c);
   process.stdin.on('end',()=>{
-    try { console.log(JSON.parse(d).transcript_path); }
+    try { console.log(JSON.parse(d).transcript_path||''); }
     catch(e) { console.log(''); }
   });
 ")
-
-SESSION_ID=$(echo "$INPUT" | node -e "
+SESSION_ID=$(echo "$ACTIVE" | node -e "
   let d='';process.stdin.on('data',c=>d+=c);
   process.stdin.on('end',()=>{
-    try { console.log(JSON.parse(d).session_id); }
+    try { console.log(JSON.parse(d).session_id||'unknown'); }
     catch(e) { console.log('unknown'); }
   });
 ")
 
-if [ -z "$TRANSCRIPT_PATH" ]; then
-  log "no transcript_path in input"
-  exit 0
-fi
-
-if [ ! -f "$TRANSCRIPT_PATH" ]; then
+if [ -z "$TRANSCRIPT_PATH" ] || [ ! -f "$TRANSCRIPT_PATH" ]; then
   log "transcript not found: $TRANSCRIPT_PATH"
   exit 0
 fi
 
-GIT_DIR=$(git rev-parse --git-dir 2>/dev/null) || exit 0
-CHECKPOINT_FILE="$GIT_DIR/gitprint-checkpoint.json"
-ACTIVE_FILE="$GIT_DIR/gitprint-active.json"
-
-# ─── Read checkpoint to determine start line ───
+# ─── Read checkpoint (last processed line) ───
 LAST_LINE=0
 if [ -f "$CHECKPOINT_FILE" ]; then
   LAST_LINE=$(node -e "
     try {
       const cp = JSON.parse(require('fs').readFileSync('$CHECKPOINT_FILE', 'utf8'));
+      // Only use checkpoint if it's for the same transcript
       if (cp.transcript_path === '$TRANSCRIPT_PATH') {
         console.log(cp.last_line || 0);
       } else {
@@ -55,9 +55,9 @@ if [ -f "$CHECKPOINT_FILE" ]; then
     } catch(e) { console.log(0); }
   ")
 fi
-log "stop hook: checkpoint last_line=$LAST_LINE"
+log "checkpoint: last_line=$LAST_LINE"
 
-# ─── Parse transcript (from checkpoint to end = remaining delta) ───
+# ─── Parse transcript DELTA (from LAST_LINE to end) ───
 STATS=$(node -e "
   const fs = require('fs');
   const allLines = fs.readFileSync('$TRANSCRIPT_PATH', 'utf8')
@@ -66,9 +66,11 @@ STATS=$(node -e "
 
   const lastLine = $LAST_LINE;
   const deltaLines = allLines.slice(lastLine);
+  const totalLineCount = allLines.length;
 
   if (deltaLines.length === 0) {
-    console.log(JSON.stringify({ empty: true }));
+    // No new lines since last commit
+    console.log(JSON.stringify({ empty: true, totalLineCount }));
     process.exit(0);
   }
 
@@ -198,18 +200,17 @@ STATS=$(node -e "
     turns,
     api_calls: apiCalls,
     models,
-    ai_files: aiFiles
+    ai_files: aiFiles,
+    totalLineCount
   }));
 ")
 
 if [ -z "$STATS" ] || [ "$STATS" = "{}" ]; then
-  log "empty stats from transcript"
-  # Clean up state files
-  rm -f "$CHECKPOINT_FILE" "$ACTIVE_FILE" 2>/dev/null
+  log "empty stats from transcript delta"
   exit 0
 fi
 
-# Check if delta was empty (no new lines since last commit)
+# Check if delta was empty (no new transcript lines)
 IS_EMPTY=$(echo "$STATS" | node -e "
   let d='';process.stdin.on('data',c=>d+=c);
   process.stdin.on('end',()=>{
@@ -218,43 +219,49 @@ IS_EMPTY=$(echo "$STATS" | node -e "
   });
 ")
 
-if [ "$IS_EMPTY" = "true" ]; then
-  log "no remaining delta — all work already captured by post-commit hooks"
-  # Clean up state files
-  rm -f "$CHECKPOINT_FILE" "$ACTIVE_FILE" 2>/dev/null
-  exit 0
-fi
-
-# Check if there are any AI file edits OR token usage in this delta
-HAS_CONTENT=$(echo "$STATS" | node -e "
+# Get totalLineCount for checkpoint update
+TOTAL_LINE_COUNT=$(echo "$STATS" | node -e "
   let d='';process.stdin.on('data',c=>d+=c);
   process.stdin.on('end',()=>{
-    try {
-      const s=JSON.parse(d);
-      const hasFiles = (s.ai_files||[]).length > 0;
-      const hasTokens = (s.input_tokens||0) + (s.output_tokens||0) > 0;
-      console.log((hasFiles || hasTokens) ? 'true' : 'false');
-    } catch(e) { console.log('false'); }
+    try { console.log(JSON.parse(d).totalLineCount || 0); }
+    catch(e) { console.log(0); }
   });
 ")
 
-if [ "$HAS_CONTENT" != "true" ]; then
-  log "no AI content in remaining delta"
-  rm -f "$CHECKPOINT_FILE" "$ACTIVE_FILE" 2>/dev/null
+if [ "$IS_EMPTY" = "true" ]; then
+  log "no new transcript lines since last commit"
+  # Still update checkpoint in case transcript grew
+  node -e "
+    require('fs').writeFileSync('$CHECKPOINT_FILE', JSON.stringify({
+      transcript_path: '$TRANSCRIPT_PATH',
+      session_id: '$SESSION_ID',
+      last_line: $TOTAL_LINE_COUNT,
+      updated: new Date().toISOString()
+    }));
+  "
   exit 0
 fi
 
-# ─── Get current HEAD SHA ───
+# Check if there are any AI file edits in this delta
+HAS_AI_FILES=$(echo "$STATS" | node -e "
+  let d='';process.stdin.on('data',c=>d+=c);
+  process.stdin.on('end',()=>{
+    try { const s=JSON.parse(d); console.log((s.ai_files||[]).length > 0 ? 'true' : 'false'); }
+    catch(e) { console.log('false'); }
+  });
+")
+
+# ─── Get HEAD SHA ───
 HEAD_SHA=$(git rev-parse HEAD 2>/dev/null)
 if [ -z "$HEAD_SHA" ]; then
-  log_err "not in a git repo or no commits"
+  log_err "no HEAD commit"
   exit 0
 fi
 
-# ─── Read existing note (if any) and merge ───
+# ─── Build note data ───
 MERGED=$(node -e "
   const existing = process.argv[1] || '{}';
-  const newStats = $STATS;
+  const newStats = JSON.parse(process.argv[2]);
 
   let data;
   try { data = JSON.parse(existing); } catch(e) { data = {}; }
@@ -275,25 +282,34 @@ MERGED=$(node -e "
     file, ai_lines_added: s.ai_lines_added, ai_lines_removed: s.ai_lines_removed
   }));
 
-  // Add session
+  // Add session (skip ai_files and totalLineCount from session entry)
   const session = { ...newStats };
   delete session.ai_files;
+  delete session.totalLineCount;
+  delete session.empty;
   const exists = data.sessions.find(s => s.session_id === session.session_id);
   if (!exists) data.sessions.push(session);
-  else Object.assign(exists, session);
+  else Object.assign(exists, session); // update with latest delta
 
   console.log(JSON.stringify(data));
-" "$(git notes --ref=gitprint show "$HEAD_SHA" 2>/dev/null || echo '{}')")
+" "$(git notes --ref=gitprint show "$HEAD_SHA" 2>/dev/null || echo '{}')" "$STATS")
 
-# ─── Write git note to HEAD (remaining delta goes to latest commit) ───
+# ─── Write git note ───
 NOTE_ERR=$(echo "$MERGED" | git notes --ref=gitprint add -f --file=- "$HEAD_SHA" 2>&1) || log_err "git notes write failed: $NOTE_ERR"
-log "note written to $HEAD_SHA (remaining delta)"
+log "note written to $HEAD_SHA (delta from line $LAST_LINE to $TOTAL_LINE_COUNT)"
 
-# ─── Clean up state files ───
-rm -f "$CHECKPOINT_FILE" "$ACTIVE_FILE" 2>/dev/null
-log "cleaned up checkpoint and active session files"
+# ─── Update checkpoint ───
+node -e "
+  require('fs').writeFileSync('$CHECKPOINT_FILE', JSON.stringify({
+    transcript_path: '$TRANSCRIPT_PATH',
+    session_id: '$SESSION_ID',
+    last_line: $TOTAL_LINE_COUNT,
+    updated: new Date().toISOString()
+  }));
+"
+log "checkpoint updated: last_line=$TOTAL_LINE_COUNT"
 
-# ─── Push notes ───
+# ─── Push notes (best-effort, silent fail if offline) ───
 git push origin refs/notes/gitprint 2>/dev/null &
 disown 2>/dev/null
 log "push triggered in background"

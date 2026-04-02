@@ -98,6 +98,8 @@ const TOOLS = [
     detect: () => true,
     hooks: [
       { src: 'stop.sh', dest: '.claude/hooks/stop.sh' },
+      { src: 'post-tool-use.sh', dest: '.claude/hooks/post-tool-use.sh' },
+      { src: 'post-commit.sh', dest: '.git/hooks/post-commit', gitHook: true },
     ],
     config: {
       type: 'settings-json',
@@ -106,10 +108,21 @@ const TOOLS = [
       hookCmd: 'bash "$CLAUDE_PROJECT_DIR"/.claude/hooks/stop.sh',
       checkField: 'stop.sh',
     },
+    extraConfigs: [
+      {
+        type: 'settings-json',
+        path: '.claude/settings.json',
+        hookKey: 'PostToolUse',
+        hookCmd: 'bash "$CLAUDE_PROJECT_DIR"/.claude/hooks/post-tool-use.sh',
+        checkField: 'post-tool-use.sh',
+      },
+    ],
     doctorChecks: [
       { type: 'file-exec', path: '.claude/hooks/stop.sh' },
+      { type: 'file-exec', path: '.claude/hooks/post-tool-use.sh' },
       { type: 'dry-run', path: '.claude/hooks/stop.sh', stdin: '{"transcript_path":"/dev/null","session_id":"doctor-test"}' },
       { type: 'settings-json', path: '.claude/settings.json', hookKey: 'Stop', checkField: 'stop.sh' },
+      { type: 'settings-json', path: '.claude/settings.json', hookKey: 'PostToolUse', checkField: 'post-tool-use.sh' },
     ],
     addPaths: ['.claude'],
   },
@@ -309,6 +322,25 @@ function installTool(root, tool) {
     const destPath = path.join(root, hook.dest);
     fs.mkdirSync(path.dirname(destPath), { recursive: true });
     const srcPath = path.join(templateDir(), hook.src);
+
+    // Git hooks need special handling — chain with existing hooks
+    if (hook.gitHook && fs.existsSync(destPath)) {
+      const existing = fs.readFileSync(destPath, 'utf8');
+      if (!existing.includes('gitprint')) {
+        // Backup existing hook and create wrapper
+        const backupPath = destPath + '.pre-gitprint';
+        fs.copyFileSync(destPath, backupPath);
+        fs.chmodSync(backupPath, 0o755);
+        const hookContent = fs.readFileSync(srcPath, 'utf8');
+        // Append: run gitprint hook then the original
+        fs.writeFileSync(destPath, hookContent + '\n\n# ─── Run original hook ───\n' +
+          `if [ -f "${backupPath}" ]; then bash "${backupPath}"; fi\n`);
+        fs.chmodSync(destPath, 0o755);
+        console.log(`  ${GREEN}+${NC} ${hook.dest} (chained with existing)`);
+        continue;
+      }
+    }
+
     fs.copyFileSync(srcPath, destPath);
     if (!hook.noExec) fs.chmodSync(destPath, 0o755);
     console.log(`  ${GREEN}+${NC} ${hook.dest}`);
@@ -332,6 +364,21 @@ function installTool(root, tool) {
       settings.hooks[cfg.hookKey].push({
         hooks: [{ type: 'command', command: cfg.hookCmd }]
       });
+    }
+
+    // Process extraConfigs (e.g. PostToolUse hook in same settings.json)
+    for (const extra of (tool.extraConfigs || [])) {
+      if (extra.type === 'settings-json' && extra.path === cfg.path) {
+        if (!settings.hooks[extra.hookKey]) settings.hooks[extra.hookKey] = [];
+        const hasExtra = settings.hooks[extra.hookKey].some(h =>
+          h.hooks?.some(hh => (hh.command || '').includes(extra.checkField))
+        );
+        if (!hasExtra) {
+          settings.hooks[extra.hookKey].push({
+            hooks: [{ type: 'command', command: extra.hookCmd }]
+          });
+        }
+      }
     }
 
     fs.mkdirSync(path.dirname(cfgPath), { recursive: true });
