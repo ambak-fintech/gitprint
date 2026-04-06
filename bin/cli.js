@@ -100,6 +100,7 @@ const TOOLS = [
       { src: 'stop.sh', dest: '.claude/hooks/stop.sh' },
       { src: 'post-tool-use.sh', dest: '.claude/hooks/post-tool-use.sh' },
       { src: 'post-commit.sh', dest: '.git/hooks/post-commit', gitHook: true },
+      { src: 'post-checkout.sh', dest: '.git/hooks/post-checkout', gitHook: true },
     ],
     config: {
       type: 'settings-json',
@@ -123,8 +124,9 @@ const TOOLS = [
       { type: 'dry-run', path: '.claude/hooks/stop.sh', stdin: '{"transcript_path":"/dev/null","session_id":"doctor-test"}' },
       { type: 'settings-json', path: '.claude/settings.json', hookKey: 'Stop', checkField: 'stop.sh' },
       { type: 'settings-json', path: '.claude/settings.json', hookKey: 'PostToolUse', checkField: 'post-tool-use.sh' },
+      { type: 'file-exists', path: '.gitprint/branch.json' },
     ],
-    addPaths: ['.claude'],
+    addPaths: ['.claude', '.gitprint'],
   },
   {
     id: 'cursor',
@@ -726,6 +728,19 @@ async function init() {
     console.log(`    ${DIM}git config --local --add remote.origin.push "+refs/notes/gitprint:refs/notes/gitprint"${NC}`);
     console.log(`    ${DIM}git config --local --add remote.origin.fetch "+refs/notes/gitprint:refs/notes/gitprint"${NC}`);
   }
+
+  // Write .gitprint/branch.json for current branch
+  const gitprintDir = path.join(root, '.gitprint');
+  fs.mkdirSync(gitprintDir, { recursive: true });
+  const currentBranch = execSync('git symbolic-ref --short HEAD', { encoding: 'utf8' }).trim();
+  const branchJson = path.join(gitprintDir, 'branch.json');
+  const branchData = {
+    branch: currentBranch,
+    parent: base,  // during init, base branch IS the parent
+    created: new Date().toISOString(),
+  };
+  fs.writeFileSync(branchJson, JSON.stringify(branchData, null, 2) + '\n');
+  console.log(`  ${GREEN}+${NC} .gitprint/branch.json (parent: ${base})`);
 
   console.log('');
   console.log(`${GREEN}Gitprint installed!${NC}`);
