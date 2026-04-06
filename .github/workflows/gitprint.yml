@@ -12,18 +12,61 @@ permissions:
 
 jobs:
   create-pr:
-    if: github.event_name == 'create' && github.event.ref_type == 'branch'
+    if: false
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Create Draft Pull Request
         uses: actions/github-script@v7
         with:
           script: |
+            const { execSync } = require('child_process');
             const branch = context.payload.ref;
             const skip = ['main', 'main', 'master', 'develop', 'pre_release_master'];
             if (skip.includes(branch)) return;
+
+            // Detect parent branch (closest branch by merge-base distance)
+            const allBranches = execSync('git branch -r --format="%(refname:short)"')
+              .toString().trim().split('\n')
+              .map(b => b.replace('origin/', ''))
+              .filter(b => b !== branch && !skip.includes(b) && b !== 'HEAD');
+
+            let targetBase = 'main';
+            let bestForkDist = Infinity;
+            let bestCandidateDivergence = Infinity;
+            let bestMergeBaseDepth = -1;
+
+            // Always consider the default branch as a candidate too
+            const candidates = [...new Set([...allBranches, 'main'])];
+
+            for (const candidate of candidates) {
+              try {
+                const mergeBase = execSync(`git merge-base origin/${candidate} origin/${branch}`)
+                  .toString().trim();
+                const forkDist = parseInt(
+                  execSync(`git rev-list --count ${mergeBase}..origin/${branch}`).toString().trim()
+                );
+                const candidateDivergence = parseInt(
+                  execSync(`git rev-list --count ${mergeBase}..origin/${candidate}`).toString().trim()
+                );
+                const mergeBaseDepth = parseInt(
+                  execSync(`git rev-list --count ${mergeBase}`).toString().trim()
+                );
+                const better =
+                  forkDist < bestForkDist ||
+                  (forkDist === bestForkDist && candidateDivergence < bestCandidateDivergence) ||
+                  (forkDist === bestForkDist && candidateDivergence === bestCandidateDivergence && mergeBaseDepth > bestMergeBaseDepth);
+                if (better) {
+                  bestForkDist = forkDist;
+                  bestCandidateDivergence = candidateDivergence;
+                  bestMergeBaseDepth = mergeBaseDepth;
+                  targetBase = candidate;
+                }
+              } catch { continue; }
+            }
 
             const title = branch
               .replace(/^(feature|fix|hotfix|bugfix|chore|refactor)\//, '')
@@ -36,15 +79,15 @@ jobs:
                 repo: context.repo.repo,
                 title,
                 head: branch,
-                base: 'main',
-                body: `## Auto-generated PR\n\n**Branch:** \`${branch}\`\n**Created by:** @${context.actor}`,
+                base: targetBase,
+                body: `## Auto-generated PR\n\n**Branch:** \`${branch}\`\n**Target:** \`${targetBase}\`\n**Created by:** @${context.actor}`,
                 draft: true,
               });
               await github.rest.issues.addLabels({
                 owner: context.repo.owner, repo: context.repo.repo,
                 issue_number: pr.number, labels: ['auto-pr'],
               });
-              console.log(`PR #${pr.number} created`);
+              console.log(`PR #${pr.number} created targeting ${targetBase}`);
             } catch (e) {
               if (e.status === 422) console.log('PR already exists');
               else throw e;
