@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   create-pr:
-    if: github.event_name == 'create' && github.event.ref_type == 'branch'
+    if: github.event_name == 'create' && github.event.ref_type == 'branch' && vars.GITPRINT_AUTO_PR == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -80,17 +80,19 @@ jobs:
 
             try {
               const { data: pr } = await github.rest.pulls.create({
-                owner, repo, title,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
                 head: branch,
                 base: targetBase,
                 body: `## Auto-generated PR\n\n**Branch:** \`${branch}\`\n**Target:** \`${targetBase}\`\n**Created by:** @${context.actor}`,
                 draft: true,
               });
               await github.rest.issues.addLabels({
-                owner, repo,
+                owner: context.repo.owner, repo: context.repo.repo,
                 issue_number: pr.number, labels: ['auto-pr'],
               });
-              console.log(`PR #${pr.number} created targeting ${targetBase}`);
+              console.log(`PR #${pr.number} created`);
             } catch (e) {
               if (e.status === 422) console.log('PR already exists');
               else throw e;
