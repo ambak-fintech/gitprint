@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   create-pr:
-    if: github.event_name == 'create' && github.event.ref_type == 'branch'
+    if: github.event_name == 'create' && github.event.ref_type == 'branch' && vars.GITPRINT_AUTO_PR == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -21,10 +21,57 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
+            const fs = require('fs');
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
             const branch = context.payload.ref;
-            const skip = ['BASE_BRANCH_PLACEHOLDER', 'main', 'master', 'develop', 'pre_release_master'];
+            const defaultBase = 'BASE_BRANCH_PLACEHOLDER';
+            const skip = [defaultBase, 'main', 'master', 'develop', 'pre_release_master'];
             if (skip.includes(branch)) return;
 
+            // ─── Strategy 1: Read .gitprint/branch.json (foolproof) ───
+            let targetBase = null;
+            try {
+              const raw = fs.readFileSync('.gitprint/branch.json', 'utf8');
+              const data = JSON.parse(raw);
+              if (data.parent && data.branch === branch) {
+                targetBase = data.parent;
+                console.log(`Parent from .gitprint/branch.json: ${targetBase}`);
+              }
+            } catch { /* file missing or invalid */ }
+
+            // ─── Strategy 2: Fallback to GitHub API compareCommits ───
+            if (!targetBase) {
+              console.log('No branch.json found, falling back to API detection...');
+              targetBase = defaultBase;
+              let bestAheadBy = Infinity;
+              let bestBehindBy = Infinity;
+              const { data: allBranches } = await github.rest.repos.listBranches({
+                owner, repo, per_page: 100,
+              });
+              const candidates = [
+                ...allBranches.map(b => b.name).filter(n => n !== branch && !skip.includes(n)),
+                defaultBase,
+              ];
+              for (const candidate of candidates) {
+                try {
+                  const { data: cmp } = await github.rest.repos.compareCommits({
+                    owner, repo, base: candidate, head: branch,
+                  });
+                  const better =
+                    cmp.ahead_by < bestAheadBy ||
+                    (cmp.ahead_by === bestAheadBy && cmp.behind_by < bestBehindBy);
+                  if (better) {
+                    bestAheadBy = cmp.ahead_by;
+                    bestBehindBy = cmp.behind_by;
+                    targetBase = candidate;
+                  }
+                } catch { continue; }
+              }
+              console.log(`API detected parent: ${targetBase} (ahead=${bestAheadBy} behind=${bestBehindBy})`);
+            }
+
+            // ─── Create draft PR ───
             const title = branch
               .replace(/^(feature|fix|hotfix|bugfix|chore|refactor)\//, '')
               .replace(/[-_]/g, ' ')
@@ -32,19 +79,17 @@ jobs:
 
             try {
               const { data: pr } = await github.rest.pulls.create({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                title,
+                owner, repo, title,
                 head: branch,
-                base: 'BASE_BRANCH_PLACEHOLDER',
-                body: `## Auto-generated PR\n\n**Branch:** \`${branch}\`\n**Created by:** @${context.actor}`,
+                base: targetBase,
+                body: `## Auto-generated PR\n\n**Branch:** \`${branch}\`\n**Target:** \`${targetBase}\`\n**Created by:** @${context.actor}`,
                 draft: true,
               });
               await github.rest.issues.addLabels({
-                owner: context.repo.owner, repo: context.repo.repo,
+                owner, repo,
                 issue_number: pr.number, labels: ['auto-pr'],
               });
-              console.log(`PR #${pr.number} created`);
+              console.log(`PR #${pr.number} created targeting ${targetBase}`);
             } catch (e) {
               if (e.status === 422) console.log('PR already exists');
               else throw e;
