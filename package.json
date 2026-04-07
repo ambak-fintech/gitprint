@@ -1,6 +1,6 @@
 {
   "name": "@ambak/gitprint",
-  "version": "0.2.6",
+  "version": "0.3.0",
   "description": "AI code attribution for pull requests — powered by Git Notes",
   "bin": {
     "gitprint": "./bin/cli.js"
@@ -8,7 +8,8 @@
   "scripts": {
     "test": "node --test test/unit/*.test.js test/integration/*.test.js",
     "test:unit": "node --test test/unit/*.test.js",
-    "test:integration": "node --test test/integration/*.test.js"
+    "test:integration": "node --test test/integration/*.test.js",
+    "release": "git tag v$(node -p \"require('./package.json').version\") && git push origin v$(node -p \"require('./package.json').version\")"
   },
   "engines": {
     "node": ">=20"
