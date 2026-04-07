@@ -21,12 +21,8 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
-            const fs = require('fs');
-            const owner = context.repo.owner;
-            const repo = context.repo.repo;
             const branch = context.payload.ref;
-            const defaultBase = 'main';
-            const skip = [defaultBase, 'master', 'develop', 'pre_release_master'];
+            const skip = ['main', 'main', 'master', 'develop', 'pre_release_master'];
             if (skip.includes(branch)) return;
 
             // ─── Strategy 1: Read .gitprint/branch.json (foolproof) ───
@@ -80,17 +76,19 @@ jobs:
 
             try {
               const { data: pr } = await github.rest.pulls.create({
-                owner, repo, title,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
                 head: branch,
-                base: targetBase,
-                body: `## Auto-generated PR\n\n**Branch:** \`${branch}\`\n**Target:** \`${targetBase}\`\n**Created by:** @${context.actor}`,
+                base: 'main',
+                body: `## Auto-generated PR\n\n**Branch:** \`${branch}\`\n**Created by:** @${context.actor}`,
                 draft: true,
               });
               await github.rest.issues.addLabels({
-                owner, repo,
+                owner: context.repo.owner, repo: context.repo.repo,
                 issue_number: pr.number, labels: ['auto-pr'],
               });
-              console.log(`PR #${pr.number} created targeting ${targetBase}`);
+              console.log(`PR #${pr.number} created`);
             } catch (e) {
               if (e.status === 422) console.log('PR already exists');
               else throw e;
