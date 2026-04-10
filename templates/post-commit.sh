@@ -85,7 +85,7 @@ STATS=$(node -e "
   };
 
   const repoRoot = (() => { try { return require('child_process').execSync('git rev-parse --show-toplevel', { encoding: 'utf8' }).trim(); } catch { return process.cwd(); } })();
-  const trackFile = (fp, added, removed) => {
+  const trackFile = (fp, added, removed, newStrContent = '') => {
     if (!fp) return;
     fp = fp.replace(/^\\.\//, '');
     if (fp.startsWith('/')) {
@@ -96,17 +96,31 @@ STATS=$(node -e "
       if (abs.startsWith(repoRoot + '/')) fp = abs.slice(repoRoot.length + 1);
     }
     if (fp.includes('.ai-stats') || fp.includes('node_modules')) return;
-    if (!fileLineStats[fp]) fileLineStats[fp] = { added: 0, removed: 0 };
+    if (!fileLineStats[fp]) fileLineStats[fp] = { added: 0, removed: 0, _newStrContent: '' };
     fileLineStats[fp].added += added;
     fileLineStats[fp].removed += removed;
+    fileLineStats[fp]._newStrContent += '\n' + newStrContent;
   };
 
-  for (const line of deltaLines) {
+  // Pre-pass: find last index per message.id to avoid streaming duplicate token counts
+  const lastIndexById = {};
+  deltaLines.forEach((line, idx) => {
+    try {
+      const e = JSON.parse(line);
+      if (e.type === 'assistant' && e.message?.id) lastIndexById[e.message.id] = idx;
+    } catch {}
+  });
+
+  deltaLines.forEach((line, idx) => {
     try {
       const entry = JSON.parse(line);
-      if (entry.isSidechain || entry.isApiErrorMessage) continue;
+      if (entry.isSidechain || entry.isApiErrorMessage) return;
 
       if (entry.type === 'human') turns++;
+
+      if (entry.type === 'assistant' && entry.message?.id) {
+        if (idx !== lastIndexById[entry.message.id]) return; // skip partial streaming chunk
+      }
 
       if (entry.type === 'assistant' && entry.message?.usage) {
         const u = entry.message.usage;
@@ -138,27 +152,53 @@ STATS=$(node -e "
             const fp = input.file_path || input.path || input.filePath;
             const oldStr = input.old_str || input.old_string || input.oldStr || '';
             const newStr = input.new_str || input.new_string || input.newStr || input.replacement || '';
-            trackFile(fp, countLines(newStr), countLines(oldStr));
+            trackFile(fp, countLines(newStr), countLines(oldStr), newStr);
           }
 
           if (/^MultiEdit$/i.test(name)) {
             const fp = input.file_path || input.path || input.filePath;
             for (const edit of (input.edits || [])) {
-              trackFile(fp, countLines(edit.new_str || edit.new_string || ''), countLines(edit.old_str || edit.old_string || ''));
+              const ns = edit.new_str || edit.new_string || '';
+              trackFile(fp, countLines(ns), countLines(edit.old_str || edit.old_string || ''), ns);
             }
           }
 
           if (/^(Write|Create|file_write|create_file|write)$/i.test(name)) {
             const fp = input.file_path || input.path || input.filePath;
-            trackFile(fp, countLines(input.content || input.file_text || ''), 0);
+            const content = input.content || input.file_text || '';
+            trackFile(fp, countLines(content), 0, content);
           }
         }
       }
     } catch (e) {}
+  });
+
+  // ─── Committed diff intersection (replace proposed line counts with actual committed lines) ───
+  const { execSync: execSyncDiff } = require('child_process');
+  const intersectedStats = {};
+
+  for (const [fp, stat] of Object.entries(fileLineStats)) {
+    try {
+      const diffOut = execSyncDiff('git diff HEAD~1..HEAD -- "' + fp + '" 2>/dev/null', { encoding: 'utf8' });
+      const committedLines = new Set(
+        diffOut.split('\n')
+          .filter(l => l.startsWith('+') && !l.startsWith('+++'))
+          .map(l => l.slice(1).trim())
+          .filter(l => l.length > 1)
+      );
+      const aiProposed = (stat._newStrContent || '').split('\n')
+        .map(l => l.trim())
+        .filter(l => l.length > 1);
+      const matched = aiProposed.filter(l => committedLines.has(l)).length;
+      intersectedStats[fp] = { ai_lines_added: matched, ai_lines_removed: 0 };
+    } catch {
+      // fallback: use original counts if diff fails (e.g. first commit)
+      intersectedStats[fp] = { ai_lines_added: stat.added || 0, ai_lines_removed: stat.removed || 0 };
+    }
   }
 
-  const aiFiles = Object.entries(fileLineStats).map(([file, s]) => ({
-    file, ai_lines_added: s.added, ai_lines_removed: s.removed
+  const aiFiles = Object.entries(intersectedStats).map(([file, s]) => ({
+    file, ai_lines_added: s.ai_lines_added, ai_lines_removed: s.ai_lines_removed
   }));
 
   // ─── Cost estimation ───

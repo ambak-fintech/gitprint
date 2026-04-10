@@ -74,12 +74,25 @@ STATS=$(node -e "
     fileLineStats[fp].removed += removed;
   };
 
-  for (const line of lines) {
+  // Pre-pass: find last index per message.id to avoid streaming duplicate token counts
+  const lastIndexById = {};
+  lines.forEach((line, idx) => {
+    try {
+      const e = JSON.parse(line);
+      if ((e.type === 'assistant' || e.role === 'assistant') && e.message?.id) lastIndexById[e.message.id] = idx;
+    } catch {}
+  });
+
+  lines.forEach((line, idx) => {
     try {
       const entry = JSON.parse(line);
 
       // Count user messages as turns
       if (entry.type === 'human' || entry.role === 'user') turns++;
+
+      if ((entry.type === 'assistant' || entry.role === 'assistant') && entry.message?.id) {
+        if (idx !== lastIndexById[entry.message.id]) return; // skip partial streaming chunk
+      }
 
       // Count API calls from assistant responses (best effort)
       if (entry.type === 'assistant' || entry.role === 'assistant') {
@@ -164,7 +177,7 @@ STATS=$(node -e "
         }
       }
     } catch (e) {}
-  }
+  });
 
   const aiFiles = Object.entries(fileLineStats).map(([file, s]) => ({
     file, ai_lines_added: s.added, ai_lines_removed: s.removed

@@ -175,12 +175,25 @@ STATS=$(node -e "
   try {
     const lines = fs.readFileSync(eventsPath, 'utf8').split('\n').filter(Boolean);
 
-    for (const line of lines) {
+    // Pre-pass: find last index per message.id to avoid streaming duplicate token counts
+    const lastIndexById = {};
+    lines.forEach((line, idx) => {
+      try {
+        const e = JSON.parse(line);
+        if ((e.type === 'assistant' || e.type === 'assistant.message') && e.message?.id) lastIndexById[e.message.id] = idx;
+      } catch {}
+    });
+
+    lines.forEach((line, idx) => {
       try {
         const entry = JSON.parse(line);
 
         // Count user messages as turns
         if (entry.type === 'human' || entry.type === 'user') turns++;
+
+        if ((entry.type === 'assistant' || entry.type === 'assistant.message') && entry.message?.id) {
+          if (idx !== lastIndexById[entry.message.id]) return; // skip partial streaming chunk
+        }
 
         // Token tracking from assistant.message events
         if ((entry.type === 'assistant.message' || entry.type === 'assistant') && entry.usage) {
@@ -277,7 +290,7 @@ STATS=$(node -e "
           }
         }
       } catch (e) {}
-    }
+    });
   } catch(e) {
     // events.jsonl unreadable — continue with pending data only
   }

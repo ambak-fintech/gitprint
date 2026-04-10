@@ -5,7 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const readline = require('readline');
 const os = require('os');
-const { PRICING, matchPricing, sessionCost, fmt, fmtCost, getToolName } = require('../lib/utils');
+const { sessionCost, fmt, fmtCost, getToolName } = require('../lib/utils');
 const { checkForUpdate, runUpdate } = require('../lib/update');
 
 const BLUE = '\x1b[34m';
@@ -26,12 +26,14 @@ ${YELLOW}Usage:${NC}
   gitprint init [--yes]        Install hooks + workflow in current repo
   gitprint status              Show current AI stats for this branch
   gitprint report [file]       Generate markdown report (default: gitprint-report.md)
+  gitprint verify [--verbose]  Verify token counts and file attribution accuracy
   gitprint doctor              Check if everything is configured correctly
   gitprint update              Update Gitprint to the latest version
   gitprint uninstall           Remove Gitprint from current repo
 
 ${YELLOW}Options:${NC}
   --yes, -y                    Skip all prompts, use defaults
+  --verbose, -v                Show detailed output (used with verify)
 
 ${DIM}https://github.com/ambak-fintech/gitprint${NC}
 `;
@@ -101,6 +103,7 @@ const TOOLS = [
       { src: 'post-tool-use.sh', dest: '.claude/hooks/post-tool-use.sh' },
       { src: 'post-commit.sh', dest: '.git/hooks/post-commit', gitHook: true },
       { src: 'post-checkout.sh', dest: '.git/hooks/post-checkout', gitHook: true },
+      { src: 'pre-push.sh', dest: '.git/hooks/pre-push', gitHook: true },
     ],
     config: {
       type: 'settings-json',
@@ -1056,6 +1059,165 @@ function uninstall() {
   console.log('');
 }
 
+// ─── VERIFY ───
+
+function verify() {
+  if (!isGitRepo()) { console.error('Not a git repo'); process.exit(1); }
+  const verbose = args.includes('--verbose') || args.includes('-v');
+  const base = detectBaseBranch();
+
+  console.log(`\n${BLUE}Gitprint Verify${NC}`);
+
+  // Fetch notes
+  try { execSync('git fetch origin refs/notes/gitprint:refs/notes/gitprint 2>/dev/null', { stdio: 'pipe' }); } catch {}
+
+  // Get commits ahead of base
+  let commits = [];
+  try {
+    commits = execSync(`git log origin/${base}..HEAD --format="%H"`, { encoding: 'utf8' })
+      .trim().split('\n').filter(Boolean);
+  } catch {}
+
+  if (commits.length === 0) {
+    console.log(`No commits ahead of ${base}`);
+    process.exit(0);
+  }
+
+  let branch = '';
+  try { branch = execSync('git symbolic-ref --short HEAD', { encoding: 'utf8' }).trim(); } catch {}
+  console.log(`Branch: ${branch} (${commits.length} commits ahead of ${base})\n`);
+
+  // ── Token accuracy ──
+  let storedInput = 0, storedOutput = 0, storedCacheCreate = 0, storedCacheRead = 0;
+  let storedCost = 0;
+  const noteTranscripts = new Set();
+
+  for (const sha of commits) {
+    try {
+      const note = execSync(`git notes --ref=gitprint show ${sha} 2>/dev/null`, { encoding: 'utf8' }).trim();
+      if (!note) continue;
+      const data = JSON.parse(note);
+      for (const s of (data.sessions || [])) {
+        storedInput       += s.input_tokens || 0;
+        storedOutput      += s.output_tokens || 0;
+        storedCacheCreate += s.cache_creation_tokens || 0;
+        storedCacheRead   += s.cache_read_tokens || 0;
+        storedCost        += s.estimated_cost || 0;
+        if (s.transcript_path) noteTranscripts.add(s.transcript_path);
+      }
+    } catch {}
+  }
+
+  // Re-parse transcripts from scratch
+  let reInput = 0, reOutput = 0, reCacheCreate = 0, reCacheRead = 0;
+  let dupCount = 0;
+
+  for (const tpath of noteTranscripts) {
+    if (!fs.existsSync(tpath)) {
+      if (verbose) console.log(`${DIM}Transcript not found: ${tpath}${NC}`);
+      continue;
+    }
+    const lines = fs.readFileSync(tpath, 'utf8').split('\n').filter(Boolean);
+    // Find last index per message.id
+    const lastIdx = {};
+    lines.forEach((l, i) => {
+      try { const e = JSON.parse(l); if (e.message?.id) lastIdx[e.message.id] = i; } catch {}
+    });
+    lines.forEach((l, i) => {
+      try {
+        const e = JSON.parse(l);
+        if (e.type !== 'assistant' || !e.message?.usage) return;
+        if (e.message?.id && i !== lastIdx[e.message.id]) { dupCount++; return; }
+        const u = e.message.usage;
+        reInput       += u.input_tokens || 0;
+        reOutput      += u.output_tokens || 0;
+        reCacheCreate += u.cache_creation_input_tokens || 0;
+        reCacheRead   += u.cache_read_input_tokens || 0;
+      } catch {}
+    });
+  }
+
+  const fmtNum = n => n.toLocaleString();
+  const matchLabel = (stored, recounted) => {
+    if (recounted === 0 && stored === 0) return `${DIM}n/a${NC}`;
+    const diff = Math.abs(stored - recounted);
+    const pct = recounted > 0 ? Math.round((diff / recounted) * 100) : 0;
+    if (pct <= 2) return `${GREEN}✓ MATCH${NC}`;
+    return `${RED}✗ MISMATCH ${stored > recounted ? '+' : '-'}${pct}%${NC}`;
+  };
+
+  console.log(`TOKEN ACCURACY`);
+  console.log(`${'─'.repeat(60)}`);
+  if (noteTranscripts.size === 0) {
+    console.log(`  ${YELLOW}⚠ No transcript paths found in notes — cannot recount${NC}`);
+  } else {
+    console.log(`  message.id duplicates skipped: ${dupCount > 0 ? RED + dupCount + ' (inflation detected)' + NC : GREEN + '0 (clean)' + NC}`);
+    console.log(`  Input tokens    — stored: ${fmtNum(storedInput).padEnd(8)}  recounted: ${fmtNum(reInput).padEnd(8)}  ${matchLabel(storedInput, reInput)}`);
+    console.log(`  Output tokens   — stored: ${fmtNum(storedOutput).padEnd(8)}  recounted: ${fmtNum(reOutput).padEnd(8)}  ${matchLabel(storedOutput, reOutput)}`);
+    console.log(`  Cache creation  — stored: ${fmtNum(storedCacheCreate).padEnd(8)}  recounted: ${fmtNum(reCacheCreate).padEnd(8)}  ${matchLabel(storedCacheCreate, reCacheCreate)}`);
+    console.log(`  Cache read      — stored: ${fmtNum(storedCacheRead).padEnd(8)}  recounted: ${fmtNum(reCacheRead).padEnd(8)}  ${matchLabel(storedCacheRead, reCacheRead)}`);
+  }
+
+  // ── File attribution ──
+  const allFileStats = {};
+  for (const sha of commits) {
+    try {
+      const note = execSync(`git notes --ref=gitprint show ${sha} 2>/dev/null`, { encoding: 'utf8' }).trim();
+      if (!note) continue;
+      const data = JSON.parse(note);
+      for (const f of (data.ai_files || [])) {
+        if (!allFileStats[f.file]) allFileStats[f.file] = { ai: 0 };
+        allFileStats[f.file].ai += (f.ai_lines_added || 0) + (f.ai_lines_removed || 0);
+      }
+    } catch {}
+  }
+
+  let diffTotals = {};
+  try {
+    const diffOut = execSync(`git diff --numstat origin/${base}..HEAD`, { encoding: 'utf8' });
+    diffOut.split('\n').filter(Boolean).forEach(line => {
+      const [added, removed, file] = line.split('\t');
+      if (file) diffTotals[file] = (parseInt(added) || 0) + (parseInt(removed) || 0);
+    });
+  } catch {}
+
+  console.log(`\nFILE ATTRIBUTION`);
+  console.log(`${'─'.repeat(60)}`);
+
+  let fileOk = 0, fileFail = 0;
+  const allFiles = new Set([...Object.keys(allFileStats), ...Object.keys(diffTotals)]);
+
+  for (const file of [...allFiles].sort()) {
+    const ai = allFileStats[file]?.ai || 0;
+    const total = diffTotals[file] || 0;
+    if (ai === 0 && total > 0) {
+      if (verbose) console.log(`  ${DIM}${file.padEnd(45)} ai=0  diff=${total}  — (human only)${NC}`);
+      continue;
+    }
+    if (ai > total && total > 0) {
+      console.log(`  ${RED}${file.padEnd(45)} ai=${ai}  diff=${total}  ✗ EXCEEDS DIFF${NC}`);
+      fileFail++;
+    } else {
+      const pct = total > 0 ? Math.round((ai / total) * 100) : 0;
+      if (verbose) console.log(`  ${GREEN}${file.padEnd(45)} ai=${ai}  diff=${total}  ✓ (${pct}% AI)${NC}`);
+      fileOk++;
+    }
+  }
+
+  if (fileFail === 0) console.log(`  ${GREEN}✓ All files within diff bounds${NC}`);
+
+  // ── Verdict ──
+  const tokenOk = noteTranscripts.size === 0 || matchLabel(storedOutput, reOutput).includes('MATCH');
+  const fileAllOk = fileFail === 0;
+  const score = [tokenOk, fileAllOk].filter(Boolean).length;
+
+  console.log(`\nVERDICT`);
+  console.log(`${'─'.repeat(60)}`);
+  console.log(`  Token accuracy:  ${tokenOk ? GREEN + '✓ PASS' + NC : RED + '✗ FAIL' + NC}`);
+  console.log(`  File accuracy:   ${fileAllOk ? GREEN + '✓ PASS' + NC : RED + '✗ FAIL (' + fileFail + ' file(s) exceed diff)' + NC}`);
+  console.log(`  Confidence:      ${score === 2 ? GREEN : YELLOW}${score * 50}%${NC}\n`);
+}
+
 // ─── Route ───
 
 async function main() {
@@ -1079,6 +1241,9 @@ async function main() {
       break;
     case 'doctor':
       doctor();
+      break;
+    case 'verify':
+      verify();
       break;
     case 'update':
       await runUpdate();
