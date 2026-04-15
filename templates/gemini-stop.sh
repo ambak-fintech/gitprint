@@ -66,7 +66,7 @@ STATS=$(node -e "
       const abs = require('path').resolve(process.cwd(), fp);
       if (abs.startsWith(repoRoot + '/')) fp = abs.slice(repoRoot.length + 1);
     }
-    if (fp.includes('.ai-stats') || fp.includes('node_modules')) return;
+    if (fp.includes('node_modules') || fp.includes('.ai-stats') || /^\.(claude|github|gitprint|cursor|gemini|windsurf|augment|opencode)\//.test(fp)) return;
     if (!fileLineStats[fp]) fileLineStats[fp] = { added: 0, removed: 0 };
     fileLineStats[fp].added += added;
     fileLineStats[fp].removed += removed;

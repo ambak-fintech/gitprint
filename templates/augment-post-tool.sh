@@ -106,7 +106,7 @@ node -e "
       const abs = require('path').resolve(cwd, fp);
       if (abs.startsWith(repoRoot + '/')) fp = abs.slice(repoRoot.length + 1);
     }
-    if (fp.includes('node_modules')) return;
+    if (fp.includes('node_modules') || fp.includes('.ai-stats') || /^\.(claude|github|gitprint|cursor|gemini|windsurf|augment|opencode)\//.test(fp)) return;
     if (!pending[fp]) pending[fp] = { added: 0, removed: 0 };
     pending[fp].added += added;
     pending[fp].removed += removed;

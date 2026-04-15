@@ -272,6 +272,10 @@ jobs:
               /^\.cursor\//,
               /^\.vscode\//,
               /^\.idea\//,
+              /^\.gemini\//,
+              /^\.windsurf\//,
+              /^\.augment\//,
+              /^\.opencode\//,
             ];
             const isExcluded = (f) => EXCLUDE_PATTERNS.some(p => p.test(f));
 
