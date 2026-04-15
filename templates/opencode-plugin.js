@@ -40,7 +40,7 @@ module.exports = {
         const abs = require('path').resolve(process.cwd(), fp);
         if (abs.startsWith(repoRoot + '/')) fp = abs.slice(repoRoot.length + 1);
       }
-      if (fp.includes('node_modules')) return;
+      if (fp.includes('node_modules') || fp.includes('.ai-stats') || /^\.(claude|github|gitprint|cursor|gemini|windsurf|augment|opencode)\//.test(fp)) return;
       if (!fileStats[fp]) fileStats[fp] = { added: 0, removed: 0 };
       fileStats[fp].added += added;
       fileStats[fp].removed += removed;
