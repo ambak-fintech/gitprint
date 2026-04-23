@@ -256,7 +256,7 @@ NOTE_ERR=$(echo "$MERGED" | git notes --ref=gitprint add -f --file=- "$HEAD_SHA"
 log "note written to $HEAD_SHA (files=$AI_FILES_COUNT tokens=$TOKENS)"
 
 # ─── Push notes ───
-git push origin refs/notes/gitprint 2>/dev/null &
+git push origin refs/notes/gitprint </dev/null 2>/dev/null &
 disown 2>/dev/null
 log "push triggered in background"
 

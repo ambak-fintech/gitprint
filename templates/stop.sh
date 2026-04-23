@@ -294,7 +294,7 @@ rm -f "$CHECKPOINT_FILE" "$ACTIVE_FILE" 2>/dev/null
 log "cleaned up checkpoint and active session files"
 
 # ─── Push notes ───
-git push origin refs/notes/gitprint 2>/dev/null &
+git push origin refs/notes/gitprint </dev/null 2>/dev/null &
 disown 2>/dev/null
 log "push triggered in background"
 
