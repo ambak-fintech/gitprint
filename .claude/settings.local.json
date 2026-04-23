@@ -26,7 +26,27 @@
       "mcp__paper__set_text_content",
       "mcp__paper__delete_nodes",
       "mcp__paper__get_children",
-      "Bash(head:*)"
+      "Bash(head:*)",
+      "Bash(git -C /Users/akshatjoshi/Desktop/gitprint status --short)",
+      "Read(//Users/akshatjoshi/Desktop/ai-eng-platform/src/lib/**)",
+      "Read(//Users/akshatjoshi/Desktop/ai-eng-platform/src/app/api/**)",
+      "Read(//Users/akshatjoshi/Desktop/ai-eng-platform/**)",
+      "Bash(git -C /Users/akshatjoshi/Desktop/ai-eng-platform status --short)",
+      "Bash(git -C /Users/akshatjoshi/Desktop/ai-eng-platform stash)",
+      "Bash(git -C /Users/akshatjoshi/Desktop/ai-eng-platform diff HEAD~1 src/app/api/ingest/push/route.ts)",
+      "Bash(git -C /Users/akshatjoshi/Desktop/ai-eng-platform stash pop)",
+      "Bash(git -C /Users/akshatjoshi/Desktop/gitprint diff HEAD --stat)",
+      "Bash(git -C /Users/akshatjoshi/Desktop/gitprint status)",
+      "Bash(git -C /Users/akshatjoshi/Desktop/ai-eng-platform status)",
+      "Bash(git -C /Users/akshatjoshi/Desktop/ai-eng-platform diff --stat HEAD)",
+      "Bash(git remote *)",
+      "Bash(brew services *)",
+      "Read(//Users/akshatjoshi/Desktop/**)",
+      "Read(//Users/akshatjoshi/**)",
+      "Bash(git -C /Users/akshatjoshi/Desktop/gitprint diff --stat HEAD)",
+      "Bash(npx tsc *)",
+      "Bash(npx --prefix /Users/akshatjoshi/Desktop/ai-eng-platform tsc --noEmit)",
+      "WebFetch(domain:developers.openai.com)"
     ]
   }
 }

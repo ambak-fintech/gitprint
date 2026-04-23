@@ -23,7 +23,7 @@ const HELP = `
 ${BLUE}Gitprint${NC} — AI code attribution for pull requests
 
 ${YELLOW}Usage:${NC}
-  gitprint init [--yes]        Install hooks + workflow in current repo
+  gitprint init [--yes]        Install hooks in current repo
   gitprint status              Show current AI stats for this branch
   gitprint report [file]       Generate markdown report (default: gitprint-report.md)
   gitprint doctor              Check if everything is configured correctly
@@ -69,11 +69,18 @@ function templateDir() {
   return path.join(__dirname, '..', 'templates');
 }
 
-function hasOriginRemote() {
+const PLATFORM_URL = 'http://localhost:3001';
+const GLOBAL_CONFIG_FILE = path.join(os.homedir(), '.gitprint');
+
+function readGlobalToken() {
   try {
-    execSync('git remote get-url origin', { stdio: 'pipe' });
-    return true;
-  } catch { return false; }
+    const raw = fs.readFileSync(GLOBAL_CONFIG_FILE, 'utf8');
+    return (raw.match(/^AI_PLATFORM_TOKEN=(.+)$/m) || [])[1] || '';
+  } catch { return ''; }
+}
+
+function writeGlobalToken(token) {
+  fs.writeFileSync(GLOBAL_CONFIG_FILE, `AI_PLATFORM_TOKEN=${token}\n`, { mode: 0o600 });
 }
 
 async function ask(question, defaultVal) {
@@ -99,8 +106,7 @@ const TOOLS = [
     hooks: [
       { src: 'stop.sh', dest: '.claude/hooks/stop.sh' },
       { src: 'post-tool-use.sh', dest: '.claude/hooks/post-tool-use.sh' },
-      { src: 'post-commit.sh', dest: '.git/hooks/post-commit', gitHook: true },
-      { src: 'post-checkout.sh', dest: '.git/hooks/post-checkout', gitHook: true },
+      { src: 'post-commit.sh', dest: '.github/hooks/post-commit' },
     ],
     config: {
       type: 'settings-json',
@@ -118,15 +124,20 @@ const TOOLS = [
         checkField: 'post-tool-use.sh',
       },
     ],
+    uninstallFiles: [
+      '.claude/hooks/stop.sh',
+      '.claude/hooks/post-tool-use.sh',
+      '.github/hooks/post-commit',
+    ],
     doctorChecks: [
       { type: 'file-exec', path: '.claude/hooks/stop.sh' },
       { type: 'file-exec', path: '.claude/hooks/post-tool-use.sh' },
+      { type: 'file-exec', path: '.github/hooks/post-commit' },
       { type: 'dry-run', path: '.claude/hooks/stop.sh', stdin: '{"transcript_path":"/dev/null","session_id":"doctor-test"}' },
       { type: 'settings-json', path: '.claude/settings.json', hookKey: 'Stop', checkField: 'stop.sh' },
       { type: 'settings-json', path: '.claude/settings.json', hookKey: 'PostToolUse', checkField: 'post-tool-use.sh' },
-      { type: 'file-exists', path: '.gitprint/branch.json' },
     ],
-    addPaths: ['.claude', '.gitprint'],
+    addPaths: ['.claude', '.github'],
   },
   {
     id: 'cursor',
@@ -294,6 +305,38 @@ const TOOLS = [
     ],
     cleanupDir: '.augment/hooks',
     addPaths: ['.augment'],
+  },
+  {
+    id: 'codex',
+    name: 'OpenAI Codex',
+    required: false,
+    detect: () => {
+      try { execSync('which codex', { stdio: 'pipe' }); return true; } catch {}
+      return fs.existsSync(path.join(os.homedir(), '.codex'));
+    },
+    detectHint: '`codex` command or ~/.codex/',
+    hooks: [
+      { src: 'codex-stop.sh', dest: '.codex/hooks/gitprint-stop.sh' },
+    ],
+    config: {
+      type: 'standalone-json',
+      path: '.codex/hooks.json',
+      content: {
+        hooks: {
+          Stop: [{ hooks: [{ type: 'command', command: '.codex/hooks/gitprint-stop.sh', timeout: 30 }] }],
+        },
+      },
+    },
+    doctorChecks: [
+      { type: 'file-exec', path: '.codex/hooks/gitprint-stop.sh' },
+      { type: 'standalone-json-check', path: '.codex/hooks.json', checks: ['hooks.Stop'] },
+    ],
+    uninstallFiles: [
+      '.codex/hooks/gitprint-stop.sh',
+      '.codex/hooks.json',
+    ],
+    cleanupDir: '.codex/hooks',
+    addPaths: ['.codex'],
   },
   {
     id: 'opencode',
@@ -655,34 +698,48 @@ async function init() {
   console.log(`${BLUE}Gitprint — Init${NC}`);
   console.log('');
 
+  // Cleanup legacy files from older gitprint versions
+  const legacyWorkflow = path.join(root, '.github', 'workflows', 'gitprint.yml');
+  if (fs.existsSync(legacyWorkflow)) {
+    fs.unlinkSync(legacyWorkflow);
+    console.log(`  ${YELLOW}-${NC} Removed legacy .github/workflows/gitprint.yml`);
+    // Remove .github/workflows if empty
+    try {
+      const wfDir = path.join(root, '.github', 'workflows');
+      if (fs.readdirSync(wfDir).length === 0) fs.rmdirSync(wfDir);
+      const ghDir = path.join(root, '.github');
+      if (fs.readdirSync(ghDir).length === 0) fs.rmdirSync(ghDir);
+    } catch {}
+    console.log('');
+  }
+
   const base = await ask(`  Base branch for PRs [${detected}]: `, detected);
   execSync(`git config gitprint.baseBranch ${base}`, { stdio: 'pipe' });
+  execSync('git config core.hooksPath .github/hooks', { stdio: 'pipe' });
   console.log(`   Base branch: ${GREEN}${base}${NC}`);
+  console.log(`  ${GREEN}+${NC} core.hooksPath → .github/hooks`);
   console.log('');
 
-  // Workflow
-  const workflowDir = path.join(root, '.github', 'workflows');
-  fs.mkdirSync(workflowDir, { recursive: true });
-
-  const workflowDest = path.join(workflowDir, 'gitprint.yml');
-  if (fs.existsSync(workflowDest)) {
-    const overwrite = await ask(`  ${YELLOW}gitprint.yml already exists. Overwrite? [Y/n]:${NC} `, 'Y');
-    if (overwrite.toLowerCase() === 'n') {
-      console.log(`  ${DIM}skipped${NC} .github/workflows/gitprint.yml`);
-    } else {
-      const workflowSrc = path.join(templateDir(), 'gitprint.yml');
-      let workflow = fs.readFileSync(workflowSrc, 'utf8');
-      workflow = workflow.replace(/BASE_BRANCH_PLACEHOLDER/g, base);
-      fs.writeFileSync(workflowDest, workflow);
-      console.log(`  ${GREEN}+${NC} .github/workflows/gitprint.yml`);
-    }
-  } else {
-    const workflowSrc = path.join(templateDir(), 'gitprint.yml');
-    let workflow = fs.readFileSync(workflowSrc, 'utf8');
-    workflow = workflow.replace(/BASE_BRANCH_PLACEHOLDER/g, base);
-    fs.writeFileSync(workflowDest, workflow);
-    console.log(`  ${GREEN}+${NC} .github/workflows/gitprint.yml`);
+  // Platform token
+  const gitDir = execSync('git rev-parse --git-dir', { encoding: 'utf8' }).trim();
+  const configFile = path.join(gitDir, 'gitprint-config');
+  let existingToken = readGlobalToken();
+  if (fs.existsSync(configFile)) {
+    const cfg = fs.readFileSync(configFile, 'utf8');
+    existingToken = (cfg.match(/^AI_PLATFORM_TOKEN=(.+)$/m) || [])[1] || existingToken;
   }
+  const platformToken = await ask(
+    `  Platform token${existingToken ? ' [existing]' : ''}: `,
+    existingToken
+  );
+  if (platformToken) {
+    fs.writeFileSync(configFile, `AI_PLATFORM_URL=${PLATFORM_URL}\nAI_PLATFORM_TOKEN=${platformToken}\n`);
+    writeGlobalToken(platformToken);
+    console.log(`  ${GREEN}+${NC} .git/gitprint-config (local, not committed)`);
+  } else {
+    console.log(`  ${YELLOW}!${NC} platform token skipped — post-commit hook will not ingest stats`);
+  }
+  console.log('');
 
   // Install tools via registry
   const installed = [];
@@ -710,50 +767,18 @@ async function init() {
     }
   }
 
-  // Origin remote + refspec
-  if (hasOriginRemote()) {
-    const pushRefs = execSync('git config --get-all remote.origin.push 2>/dev/null || true', { encoding: 'utf8' });
-    if (!pushRefs.includes('refs/notes/gitprint')) {
-      execSync('git config --local --add remote.origin.push "+refs/notes/gitprint:refs/notes/gitprint"');
-    }
-
-    const fetchRefs = execSync('git config --get-all remote.origin.fetch 2>/dev/null || true', { encoding: 'utf8' });
-    if (!fetchRefs.includes('refs/notes/gitprint')) {
-      execSync('git config --local --add remote.origin.fetch "+refs/notes/gitprint:refs/notes/gitprint"');
-    }
-    console.log(`  ${GREEN}+${NC} git notes push/fetch config`);
-  } else {
-    console.log(`  ${YELLOW}!${NC} no origin remote — skipping git notes config`);
-    console.log(`    ${DIM}Add a remote and run:${NC}`);
-    console.log(`    ${DIM}git config --local --add remote.origin.push "+refs/notes/gitprint:refs/notes/gitprint"${NC}`);
-    console.log(`    ${DIM}git config --local --add remote.origin.fetch "+refs/notes/gitprint:refs/notes/gitprint"${NC}`);
-  }
-
-  // Write .gitprint/branch.json for current branch
-  const gitprintDir = path.join(root, '.gitprint');
-  fs.mkdirSync(gitprintDir, { recursive: true });
-  const currentBranch = execSync('git symbolic-ref --short HEAD', { encoding: 'utf8' }).trim();
-  const branchJson = path.join(gitprintDir, 'branch.json');
-  const branchData = {
-    branch: currentBranch,
-    parent: base,  // during init, base branch IS the parent
-    created: new Date().toISOString(),
-  };
-  fs.writeFileSync(branchJson, JSON.stringify(branchData, null, 2) + '\n');
-  console.log(`  ${GREEN}+${NC} .gitprint/branch.json (parent: ${base})`);
-
   console.log('');
   console.log(`${GREEN}Gitprint installed!${NC}`);
   console.log('');
 
-  const addPathSet = new Set(['.github']);
+  const addPathSet = new Set();
   for (const tool of installed) {
     for (const p of (tool.addPaths || [])) addPathSet.add(p);
   }
   const addPaths = [...addPathSet].sort().join(' ');
 
-  console.log(`  ${YELLOW}Next:${NC}`);
-  console.log(`  ${BLUE}git add ${addPaths} && git commit -m "chore: add gitprint"${NC}`);
+  console.log(`  ${YELLOW}Next — commit hooks so all devs get them on pull:${NC}`);
+  console.log(`  ${BLUE}git add ${addPaths} && git commit -m "chore: add gitprint hooks"${NC}`);
   console.log(`  ${BLUE}git push${NC}`);
   console.log('');
 }
@@ -957,41 +982,25 @@ function doctor() {
     }
   }
 
-  // Workflow check
-  const workflowPath = path.join(root, '.github', 'workflows', 'gitprint.yml');
-  if (fs.existsSync(workflowPath)) {
-    console.log(`  ${GREEN}+${NC} .github/workflows/gitprint.yml`);
+  // Platform config check
+  console.log('');
+  console.log(`  ${DIM}Platform config${NC}`);
+  const drGitDir = (() => { try { return execSync('git rev-parse --git-dir', { encoding: 'utf8' }).trim(); } catch { return ''; } })();
+  const drConfigFile = drGitDir ? path.join(drGitDir, 'gitprint-config') : '';
+  if (drConfigFile && fs.existsSync(drConfigFile)) {
+    const cfg = fs.readFileSync(drConfigFile, 'utf8');
+    if (cfg.includes('AI_PLATFORM_TOKEN=')) {
+      console.log(`  ${GREEN}+${NC} .git/gitprint-config (token set, URL: ${PLATFORM_URL})`);
+    } else {
+      console.log(`  ${YELLOW}!${NC} .git/gitprint-config missing token — run: gitprint init`);
+    }
   } else {
-    console.log(`  ${RED}x${NC} .github/workflows/gitprint.yml missing — run: gitprint init`);
+    console.log(`  ${RED}x${NC} .git/gitprint-config missing — run: gitprint init`);
     ok = false;
   }
 
-  // Git config checks
-  console.log('');
-  console.log(`  ${DIM}Git config${NC}`);
-
-  if (hasOriginRemote()) {
-    const pushRefs = execSync('git config --get-all remote.origin.push 2>/dev/null || true', { encoding: 'utf8' });
-    if (pushRefs.includes('refs/notes/gitprint')) {
-      console.log(`  ${GREEN}+${NC} git push refspec for notes`);
-    } else {
-      console.log(`  ${RED}x${NC} git push refspec missing — run: gitprint init`);
-      ok = false;
-    }
-
-    const fetchRefs = execSync('git config --get-all remote.origin.fetch 2>/dev/null || true', { encoding: 'utf8' });
-    if (fetchRefs.includes('refs/notes/gitprint')) {
-      console.log(`  ${GREEN}+${NC} git fetch refspec for notes`);
-    } else {
-      console.log(`  ${RED}x${NC} git fetch refspec missing — run: gitprint init`);
-      ok = false;
-    }
-  } else {
-    console.log(`  ${YELLOW}!${NC} no origin remote — refspec checks skipped`);
-    console.log(`    ${DIM}Add a remote, then run: gitprint init${NC}`);
-  }
-
   // Node.js check
+  console.log('');
   try {
     const nodeVersion = execSync('node --version', { encoding: 'utf8' }).trim();
     console.log(`  ${GREEN}+${NC} Node.js ${nodeVersion}`);
@@ -1025,11 +1034,15 @@ function uninstall() {
     uninstallTool(root, tool);
   }
 
-  // Remove workflow
-  const workflowPath = path.join(root, '.github', 'workflows', 'gitprint.yml');
-  if (fs.existsSync(workflowPath)) {
-    fs.unlinkSync(workflowPath);
-    console.log(`  ${GREEN}+${NC} Removed .github/workflows/gitprint.yml`);
+  // Remove platform config
+  let uninstallGitDir = '';
+  try { uninstallGitDir = execSync('git rev-parse --git-dir', { encoding: 'utf8' }).trim(); } catch {}
+  if (uninstallGitDir) {
+    const configFile = path.join(uninstallGitDir, 'gitprint-config');
+    if (fs.existsSync(configFile)) {
+      fs.unlinkSync(configFile);
+      console.log(`  ${GREEN}+${NC} Removed .git/gitprint-config`);
+    }
   }
 
   // Remove git config
@@ -1048,11 +1061,7 @@ function uninstall() {
   }
 
   console.log('');
-  console.log(`  ${DIM}Git notes config preserved. To remove manually:${NC}`);
-  console.log(`  ${DIM}git config --local --unset-all remote.origin.push "+refs/notes/gitprint:refs/notes/gitprint"${NC}`);
-  console.log(`  ${DIM}git config --local --unset-all remote.origin.fetch "+refs/notes/gitprint:refs/notes/gitprint"${NC}`);
-  console.log('');
-  console.log(`  ${GREEN}Gitprint uninstalled.${NC} Commit the changes to remove from repo.`);
+  console.log(`  ${GREEN}Gitprint uninstalled.${NC} Commit the changes to remove hooks from repo.`);
   console.log('');
 }
 
