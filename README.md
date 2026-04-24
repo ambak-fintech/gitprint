@@ -2,21 +2,27 @@
 
 AI code attribution for pull requests — powered by Git Notes.
 
-Track how much code in your PRs was written by AI tools like Claude Code, Cursor, Copilot, Gemini CLI, Windsurf, Augment Code, and OpenCode. Every push automatically posts a live attribution report as a PR comment.
+Track how much code in your PRs was written by AI tools like Claude Code, Cursor, Copilot, Gemini CLI, Windsurf, Augment Code, Codex, and OpenCode. Every push automatically posts a live attribution report as a PR comment.
 
 ---
 
-## Supported Tools
+## Support Matrix
 
-| Tool | Token Tracking | File Attribution |
-|------|:-:|:-:|
-| Claude Code | Yes | Yes |
-| Cursor | Yes | Yes |
-| Copilot CLI | Yes | Yes |
-| Gemini CLI | Yes | Yes |
-| Windsurf | No | Yes |
-| Augment Code | No | Yes |
-| OpenCode | Yes | Yes |
+| Tool | Success Level | What Works Well | Main Gotchas |
+|------|---------------|-----------------|--------------|
+| Claude Code | High | Commit-time file and session attribution via `PostToolUse` + `post-commit` + leftover `Stop` delta | Cost is still model-family heuristic |
+| Gemini CLI | High | Commit-time file and session attribution via `AfterTool` + `post-commit` + leftover `SessionEnd` delta | Depends on Gemini transcript schema staying compatible |
+| Windsurf | Medium-High | Commit-time file attribution from recurring transcript hook + `post-commit` delta parsing | No dedicated session-end hook; uncommitted tail work can remain pending until a later response or commit; token/cost data is effectively unavailable |
+| Codex | Medium-High | Commit-time transcript-delta attachment from recurring turn-scoped `Stop` hook | File attribution comes from transcript `apply_patch`; `PostToolUse` is currently only useful for `Bash`; hooks are experimental |
+| Copilot CLI | Medium | Commit-time file attribution from `postToolUse`; later session/token metadata from `sessionEnd` | Session discovery is heuristic and exact commit-time session metadata attribution is not possible |
+| Augment Code | Medium | Commit-time file attribution from `PostToolUse`; later leftover delta/session entry on `Stop` | No token data, so token/cost fields remain `0`; exact commit-time session metadata attribution is not possible |
+| OpenCode | Medium | Commit-time file attribution from `tool.execute.after`; later token/session flush on `session.idle` | Session metadata still arrives later than commit time; depends on current OpenCode plugin API shape |
+| Cursor | Low-Medium | Best-effort note creation on `stop`, then uploader reuse | No earlier hook in current integration surface, so exact commit-time attachment is not guaranteed |
+
+Notes:
+- `High` means the tool is closest to the target lifecycle: capture during the session, attach on `git post-commit`, and only leave true tail work for the final hook.
+- `Medium` means commit-time file attribution works, but some session metadata still arrives later.
+- `Low-Medium` means only a best-effort fallback is currently possible.
 
 ---
 
@@ -207,9 +213,9 @@ runs-on: self-hosted
 ## How It Works
 
 1. You write code with an AI tool (Claude Code, Cursor, Copilot, etc.)
-2. When the AI session ends, a hook fires automatically
-3. The hook parses the session transcript → extracts tokens, models used, and per-file AI line counts
-4. This data is stored as a **Git Note** on the current commit (no extra files added to your repo)
+2. Tool/session hooks capture transcript paths or file-edit deltas as local git metadata state
+3. `git post-commit` attaches the newest available AI delta to the commit that was just created whenever the tool supports that lifecycle
+4. Final session hooks add any leftover uncommitted delta or delayed session metadata
 5. When you push, the GitHub Action reads notes across all commits in your PR
 6. It posts a detailed attribution report as a PR comment — updated on every subsequent push
 

@@ -1,8 +1,8 @@
 #!/bin/bash
 # Gitprint — Copilot CLI postToolUse Hook
-# Fires after each tool use in a Copilot CLI session
+# Fires after each file-editing tool use in a Copilot CLI session
 # Incrementally tracks file edits in .git/gitprint-copilot-pending.json
-# Data is consumed by copilot-stop.sh when the session ends
+# so post-commit can attach the delta to the next commit.
 
 # ─── Logging ───
 log() { [ "${GITPRINT_DEBUG:-0}" = "1" ] && echo "[gitprint:copilot:post-tool] $*" >&2; }
@@ -67,6 +67,7 @@ if [ -z "$GIT_DIR" ]; then
 fi
 
 PENDING_FILE="$GIT_DIR/gitprint-copilot-pending.json"
+ACTIVE_FILE="$GIT_DIR/gitprint-copilot-active.json"
 
 # ─── Extract file stats and merge into pending file ───
 node -e "
@@ -132,6 +133,17 @@ node -e "
 
   fs.writeFileSync(pendingPath, JSON.stringify(pending));
 " 2>/dev/null || log_err "failed to update pending file"
+
+node -e "
+  const fs = require('fs');
+  const toolData = $TOOL_DATA;
+  const activePath = '$ACTIVE_FILE';
+
+  fs.writeFileSync(activePath, JSON.stringify({
+    cwd: toolData.cwd || process.cwd(),
+    updated: new Date().toISOString(),
+  }));
+" 2>/dev/null || log_err "failed to update active marker"
 
 log "updated pending file"
 exit 0

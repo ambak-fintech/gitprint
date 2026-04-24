@@ -1,8 +1,8 @@
 #!/bin/bash
 # Gitprint — Augment Code PostToolUse Hook
-# Fires after each tool use in an Augment Code session
+# Fires after each file-editing tool use in an Augment Code session
 # Incrementally tracks file edits in .git/gitprint-augment-pending.json
-# Data is consumed by augment-stop.sh when the session ends
+# so post-commit can attach the delta to the next commit.
 
 # ─── Logging ───
 log() { [ "${GITPRINT_DEBUG:-0}" = "1" ] && echo "[gitprint:augment:post-tool] $*" >&2; }
@@ -73,6 +73,7 @@ if [ -z "$GIT_DIR" ]; then
 fi
 
 PENDING_FILE="$GIT_DIR/gitprint-augment-pending.json"
+ACTIVE_FILE="$GIT_DIR/gitprint-augment-active.json"
 
 # ─── Extract file stats and merge into pending file ───
 node -e "
@@ -137,6 +138,17 @@ node -e "
 
   fs.writeFileSync(pendingPath, JSON.stringify(pending));
 " 2>/dev/null || log_err "failed to update pending file"
+
+node -e "
+  const fs = require('fs');
+  const toolData = $TOOL_DATA;
+  const activePath = '$ACTIVE_FILE';
+
+  fs.writeFileSync(activePath, JSON.stringify({
+    cwd: toolData.cwd || process.cwd(),
+    updated: new Date().toISOString(),
+  }));
+" 2>/dev/null || log_err "failed to update active marker"
 
 log "updated pending file"
 exit 0

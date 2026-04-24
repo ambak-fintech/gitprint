@@ -215,6 +215,7 @@ const TOOLS = [
     },
     detectHint: '`gemini` command or ~/.gemini/',
     hooks: [
+      { src: 'gemini-post-tool.sh', dest: '.gemini/hooks/gitprint-post-tool.sh' },
       { src: 'gemini-stop.sh', dest: '.gemini/hooks/gitprint-stop.sh' },
     ],
     config: {
@@ -224,11 +225,22 @@ const TOOLS = [
       hookCmd: 'bash "$GEMINI_PROJECT_DIR"/.gemini/hooks/gitprint-stop.sh',
       checkField: 'gitprint-stop.sh',
     },
+    extraConfigs: [
+      {
+        type: 'settings-json',
+        path: '.gemini/settings.json',
+        hookKey: 'AfterTool',
+        hookCmd: 'bash "$GEMINI_PROJECT_DIR"/.gemini/hooks/gitprint-post-tool.sh',
+        checkField: 'gitprint-post-tool.sh',
+      },
+    ],
     doctorChecks: [
+      { type: 'file-exec', path: '.gemini/hooks/gitprint-post-tool.sh' },
       { type: 'file-exec', path: '.gemini/hooks/gitprint-stop.sh' },
+      { type: 'settings-json', path: '.gemini/settings.json', hookKey: 'AfterTool', checkField: 'gitprint-post-tool.sh' },
       { type: 'settings-json', path: '.gemini/settings.json', hookKey: 'SessionEnd', checkField: 'gitprint-stop.sh' },
     ],
-    uninstallFiles: ['.gemini/hooks/gitprint-stop.sh'],
+    uninstallFiles: ['.gemini/hooks/gitprint-post-tool.sh', '.gemini/hooks/gitprint-stop.sh'],
     uninstallConfig: {
       type: 'settings-json',
       path: '.gemini/settings.json',

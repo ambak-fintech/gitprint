@@ -1,173 +1,165 @@
 const { describe, it, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('fs');
 const path = require('path');
-const { createTestRepo, readGitNote, GIT_ENV } = require('../helpers/git-repo');
+const { createTestRepo, readGitNote, makeCommit, GIT_ENV } = require('../helpers/git-repo');
+const { runHook } = require('../helpers/run-hook');
 
 const PLUGIN_PATH = path.join(__dirname, '..', '..', 'templates', 'opencode-plugin.js');
 
-function createMockApi() {
-  const handlers = {};
+async function loadHooks(ctx) {
+  delete require.cache[require.resolve(PLUGIN_PATH)];
+  const plugin = require(PLUGIN_PATH);
   return {
-    on(event, handler) {
-      if (!handlers[event]) handlers[event] = [];
-      handlers[event].push(handler);
-    },
-    emit(event, data) {
-      for (const h of (handlers[event] || [])) h(data);
-    },
-    async emitAsync(event, data) {
-      for (const h of (handlers[event] || [])) await h(data);
-    },
-    handlers,
+    plugin,
+    hooks: await plugin.GitprintPlugin(ctx),
   };
 }
 
 describe('OpenCode plugin (opencode-plugin.js)', () => {
-  let plugin, api;
+  let dir, cleanup, originalCwd;
 
   beforeEach(() => {
-    delete require.cache[require.resolve(PLUGIN_PATH)];
-    plugin = require(PLUGIN_PATH);
-    api = createMockApi();
-    plugin.setup(api);
+    const repo = createTestRepo();
+    dir = repo.dir;
+    cleanup = repo.cleanup;
+    originalCwd = process.cwd();
+    process.chdir(dir);
+    Object.assign(process.env, GIT_ENV);
   });
 
-  it('has name "gitprint"', () => {
-    assert.strictEqual(plugin.name, 'gitprint');
+  afterEach(() => {
+    process.chdir(originalCwd);
+    cleanup();
   });
 
-  it('setup registers 3 event handlers', () => {
-    assert.ok(api.handlers['tool.execute.after']);
-    assert.ok(api.handlers['message.after']);
-    assert.ok(api.handlers['session.idle']);
+  it('exports a plugin function', async () => {
+    const { plugin, hooks } = await loadHooks({ directory: dir, worktree: dir });
+    assert.strictEqual(typeof plugin.GitprintPlugin, 'function');
+    assert.strictEqual(typeof hooks['tool.execute.after'], 'function');
+    assert.strictEqual(typeof hooks.event, 'function');
   });
 
-  it('tracks edit tool via tool.execute.after', () => {
-    assert.doesNotThrow(() => {
-      api.emit('tool.execute.after', {
-        tool: 'edit',
-        input: { file_path: 'src/app.js', old_string: 'old', new_string: 'new\nline' },
-      });
+  it('tracks file edits into pending state on tool.execute.after', async () => {
+    const { hooks } = await loadHooks({ directory: dir, worktree: dir });
+
+    await hooks['tool.execute.after']({
+      tool: 'edit',
+      args: { file_path: 'src/app.js', old_string: 'old', new_string: 'new\nline' },
     });
+
+    const pending = JSON.parse(fs.readFileSync(path.join(dir, '.git', 'gitprint-opencode-pending.json'), 'utf8'));
+    assert.strictEqual(pending['src/app.js'].added, 2);
+    assert.strictEqual(pending['src/app.js'].removed, 1);
+    assert.ok(fs.existsSync(path.join(dir, '.git', 'gitprint-opencode-active.json')));
   });
 
-  it('tracks write tool via tool.execute.after', () => {
-    assert.doesNotThrow(() => {
-      api.emit('tool.execute.after', {
-        tool: 'write',
-        input: { file_path: 'src/new.js', content: 'a\nb\nc' },
-      });
-    });
-  });
+  it('captures token usage from message.updated events', async () => {
+    const { hooks } = await loadHooks({ directory: dir, worktree: dir });
 
-  it('tracks multi_edit tool via tool.execute.after', () => {
-    assert.doesNotThrow(() => {
-      api.emit('tool.execute.after', {
-        tool: 'multi_edit',
-        input: {
-          file_path: 'src/app.js',
-          edits: [
-            { old_string: 'a', new_string: 'b\nc' },
-            { old_string: 'x', new_string: 'y' },
-          ],
-        },
-      });
-    });
-  });
-
-  it('skips unknown tools without error', () => {
-    assert.doesNotThrow(() => {
-      api.emit('tool.execute.after', {
-        tool: 'read',
-        input: { file_path: 'src/app.js' },
-      });
-    });
-  });
-
-  it('accumulates tokens via message.after', () => {
-    assert.doesNotThrow(() => {
-      api.emit('message.after', {
-        usage: { input_tokens: 100, output_tokens: 50 },
-        model: 'test-model',
-      });
-      api.emit('message.after', {
-        usage: { input_tokens: 200, output_tokens: 100 },
-        model: 'test-model',
-      });
-    });
-  });
-
-  it('captures session_id from message.after', () => {
-    assert.doesNotThrow(() => {
-      api.emit('message.after', {
+    await hooks.event({
+      event: {
+        type: 'message.updated',
         session_id: 'oc-session-1',
-        usage: { input_tokens: 10, output_tokens: 5 },
-      });
+        model: 'gpt-4o',
+        usage: { input_tokens: 100, output_tokens: 50 },
+      },
     });
+
+    await hooks['tool.execute.after']({
+      tool: 'write',
+      args: { file_path: 'src/usage.js', content: 'a\nb' },
+    });
+
+    await hooks.event({ event: { type: 'session.idle' } });
+
+    const note = readGitNote(dir);
+    assert.ok(note);
+    assert.strictEqual(note.sessions[0].session_id, 'oc-session-1');
+    assert.strictEqual(note.sessions[0].input_tokens, 100);
+    assert.strictEqual(note.sessions[0].output_tokens, 50);
   });
 
-  describe('session.idle (with git repo)', () => {
-    let dir, cleanup, originalCwd;
+  it('attaches pending OpenCode file delta on post-commit', async () => {
+    const { hooks } = await loadHooks({ directory: dir, worktree: dir });
 
-    beforeEach(() => {
-      const repo = createTestRepo();
-      dir = repo.dir;
-      cleanup = repo.cleanup;
-      originalCwd = process.cwd();
-
-      delete require.cache[require.resolve(PLUGIN_PATH)];
-      plugin = require(PLUGIN_PATH);
-      api = createMockApi();
-      process.chdir(dir);
-      Object.assign(process.env, GIT_ENV);
-      plugin.setup(api);
+    await hooks['tool.execute.after']({
+      tool: 'edit',
+      args: { file_path: 'src/opencode.js', old_string: 'old', new_string: 'new\nline' },
     });
 
-    afterEach(() => {
-      process.chdir(originalCwd);
-      cleanup();
+    makeCommit(dir, 'opencode delta commit');
+    const result = runHook('post-commit.sh', '', { cwd: dir });
+    assert.strictEqual(result.exitCode, 0);
+
+    const note = readGitNote(dir);
+    assert.ok(note);
+    assert.deepStrictEqual(note.sessions, []);
+
+    const file = note.ai_files.find((entry) => entry.file === 'src/opencode.js');
+    assert.ok(file);
+    assert.strictEqual(file.ai_lines_added, 2);
+    assert.strictEqual(file.ai_lines_removed, 1);
+
+    const checkpoint = JSON.parse(fs.readFileSync(path.join(dir, '.git', 'gitprint-opencode-checkpoint.json'), 'utf8'));
+    assert.strictEqual(checkpoint.files['src/opencode.js'].added, 2);
+    assert.strictEqual(checkpoint.files['src/opencode.js'].removed, 1);
+  });
+
+  it('session.idle writes only leftover delta after post-commit and clears state', async () => {
+    const { hooks } = await loadHooks({ directory: dir, worktree: dir });
+
+    await hooks['tool.execute.after']({
+      tool: 'edit',
+      args: { file_path: 'src/opencode.js', old_string: 'old', new_string: 'new\nline' },
     });
 
-    it('writes git note on session.idle', async () => {
-      api.emit('tool.execute.after', {
-        tool: 'edit',
-        input: { file_path: 'src/app.js', old_string: 'old', new_string: 'new\nline' },
-      });
-      api.emit('message.after', {
-        session_id: 'oc-1',
-        usage: { input_tokens: 100, output_tokens: 50 },
-        model: 'test-model',
-      });
-      await api.emitAsync('session.idle');
-      const note = readGitNote(dir);
-      assert.ok(note);
-      assert.strictEqual(note.sessions[0].tool, 'opencode');
-      assert.strictEqual(note.sessions[0].session_id, 'oc-1');
-      assert.strictEqual(note.sessions[0].input_tokens, 100);
-      const file = note.ai_files.find(f => f.file === 'src/app.js');
-      assert.ok(file);
-      assert.strictEqual(file.ai_lines_added, 2);
+    makeCommit(dir, 'opencode checkpoint commit');
+    runHook('post-commit.sh', '', { cwd: dir });
+
+    await hooks['tool.execute.after']({
+      tool: 'create',
+      args: { file_path: 'src/leftover.js', content: 'a\nb\nc' },
+    });
+    await hooks.event({
+      event: {
+        type: 'message.updated',
+        session_id: 'oc-session-leftover',
+        model: 'gpt-4o',
+        usage: { input_tokens: 25, output_tokens: 10 },
+      },
     });
 
-    it('resets counters after writing', async () => {
-      api.emit('tool.execute.after', {
-        tool: 'write',
-        input: { file_path: 'src/reset.js', content: 'line1\nline2' },
-      });
-      api.emit('message.after', {
-        session_id: 'oc-reset',
-        usage: { input_tokens: 50, output_tokens: 25 },
-      });
-      await api.emitAsync('session.idle');
-      await api.emitAsync('session.idle');
-      const note = readGitNote(dir);
-      assert.strictEqual(note.sessions.length, 1);
-    });
+    await hooks.event({ event: { type: 'session.idle' } });
 
-    it('skips when no data', async () => {
-      await api.emitAsync('session.idle');
-      const note = readGitNote(dir);
-      assert.strictEqual(note, null);
-    });
+    const note = readGitNote(dir);
+    assert.ok(note);
+    assert.strictEqual(note.sessions.length, 1);
+    assert.strictEqual(note.sessions[0].session_id, 'oc-session-leftover');
+    assert.strictEqual(note.sessions[0].input_tokens, 25);
+    assert.strictEqual(note.sessions[0].output_tokens, 10);
+
+    const initialFile = note.ai_files.find((entry) => entry.file === 'src/opencode.js');
+    assert.ok(initialFile);
+    assert.strictEqual(initialFile.ai_lines_added, 2);
+    assert.strictEqual(initialFile.ai_lines_removed, 1);
+
+    const leftoverFile = note.ai_files.find((entry) => entry.file === 'src/leftover.js');
+    assert.ok(leftoverFile);
+    assert.strictEqual(leftoverFile.ai_lines_added, 3);
+    assert.strictEqual(leftoverFile.ai_lines_removed, 0);
+
+    assert.ok(!fs.existsSync(path.join(dir, '.git', 'gitprint-opencode-pending.json')));
+    assert.ok(!fs.existsSync(path.join(dir, '.git', 'gitprint-opencode-active.json')));
+    assert.ok(!fs.existsSync(path.join(dir, '.git', 'gitprint-opencode-checkpoint.json')));
+  });
+
+  it('skips session.idle when no data exists', async () => {
+    const { hooks } = await loadHooks({ directory: dir, worktree: dir });
+
+    await hooks.event({ event: { type: 'session.idle' } });
+
+    const note = readGitNote(dir);
+    assert.strictEqual(note, null);
   });
 });

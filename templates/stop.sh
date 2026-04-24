@@ -1,9 +1,8 @@
 #!/bin/bash
 # Gitprint — Stop Hook (Claude Code)
 # Fires when a Claude Code session ends.
-# With the post-commit hook handling per-commit attribution,
-# this hook only processes the REMAINING delta (uncommitted AI work).
-# Falls back to full parse if no checkpoint exists (backward compat).
+# With the post-commit hook handling committed attribution,
+# this hook only processes the REMAINING delta since the last checkpoint.
 
 # ─── Logging ───
 log() { [ "${GITPRINT_DEBUG:-0}" = "1" ] && echo "[gitprint] $*" >&2; }
@@ -41,6 +40,26 @@ GIT_DIR=$(git rev-parse --git-dir 2>/dev/null) || exit 0
 CHECKPOINT_FILE="$GIT_DIR/gitprint-checkpoint.json"
 ACTIVE_FILE="$GIT_DIR/gitprint-active.json"
 
+write_checkpoint() {
+  node - "$CHECKPOINT_FILE" "$TRANSCRIPT_PATH" "$SESSION_ID" "$1" <<'NODEEOF'
+const fs = require('fs');
+const [filePath, transcriptPath, sessionId, lastLine] = process.argv.slice(2);
+
+try {
+  fs.writeFileSync(filePath, JSON.stringify({
+    transcript_path: transcriptPath,
+    session_id: sessionId || 'unknown',
+    last_line: Number(lastLine || 0),
+    updated: new Date().toISOString(),
+  }));
+} catch {}
+NODEEOF
+}
+
+clear_active() {
+  rm -f "$ACTIVE_FILE" 2>/dev/null
+}
+
 # ─── Read checkpoint to determine start line ───
 LAST_LINE=0
 if [ -f "$CHECKPOINT_FILE" ]; then
@@ -68,7 +87,7 @@ STATS=$(node -e "
   const deltaLines = allLines.slice(lastLine);
 
   if (deltaLines.length === 0) {
-    console.log(JSON.stringify({ empty: true }));
+    console.log(JSON.stringify({ empty: true, transcript_line_count: allLines.length }));
     process.exit(0);
   }
 
@@ -198,16 +217,24 @@ STATS=$(node -e "
     turns,
     api_calls: apiCalls,
     models,
-    ai_files: aiFiles
+    ai_files: aiFiles,
+    transcript_line_count: allLines.length
   }));
 ")
 
 if [ -z "$STATS" ] || [ "$STATS" = "{}" ]; then
   log "empty stats from transcript"
-  # Clean up state files
-  rm -f "$CHECKPOINT_FILE" "$ACTIVE_FILE" 2>/dev/null
+  clear_active
   exit 0
 fi
+
+TOTAL_LINES=$(echo "$STATS" | node -e "
+  let d='';process.stdin.on('data',c=>d+=c);
+  process.stdin.on('end',()=>{
+    try { const s=JSON.parse(d); console.log(s.transcript_line_count || 0); }
+    catch(e) { console.log(0); }
+  });
+")
 
 # Check if delta was empty (no new lines since last commit)
 IS_EMPTY=$(echo "$STATS" | node -e "
@@ -220,8 +247,8 @@ IS_EMPTY=$(echo "$STATS" | node -e "
 
 if [ "$IS_EMPTY" = "true" ]; then
   log "no remaining delta — all work already captured by post-commit hooks"
-  # Clean up state files
-  rm -f "$CHECKPOINT_FILE" "$ACTIVE_FILE" 2>/dev/null
+  write_checkpoint "$TOTAL_LINES"
+  clear_active
   exit 0
 fi
 
@@ -240,7 +267,8 @@ HAS_CONTENT=$(echo "$STATS" | node -e "
 
 if [ "$HAS_CONTENT" != "true" ]; then
   log "no AI content in remaining delta"
-  rm -f "$CHECKPOINT_FILE" "$ACTIVE_FILE" 2>/dev/null
+  write_checkpoint "$TOTAL_LINES"
+  clear_active
   exit 0
 fi
 
@@ -255,6 +283,26 @@ fi
 MERGED=$(node -e "
   const existing = process.argv[1] || '{}';
   const newStats = $STATS;
+
+  const mergeSession = (target, source) => {
+    target.tool = source.tool || target.tool;
+    target.timestamp = source.timestamp || target.timestamp;
+    target.input_tokens = (target.input_tokens || 0) + (source.input_tokens || 0);
+    target.output_tokens = (target.output_tokens || 0) + (source.output_tokens || 0);
+    target.cache_creation_tokens = (target.cache_creation_tokens || 0) + (source.cache_creation_tokens || 0);
+    target.cache_read_tokens = (target.cache_read_tokens || 0) + (source.cache_read_tokens || 0);
+    target.estimated_cost = (target.estimated_cost || 0) + (source.estimated_cost || 0);
+    target.turns = (target.turns || 0) + (source.turns || 0);
+    target.api_calls = (target.api_calls || 0) + (source.api_calls || 0);
+
+    if (!target.models) target.models = {};
+    for (const [model, info] of Object.entries(source.models || {})) {
+      if (!target.models[model]) target.models[model] = { input_tokens: 0, output_tokens: 0, api_calls: 0 };
+      target.models[model].input_tokens += info.input_tokens || 0;
+      target.models[model].output_tokens += info.output_tokens || 0;
+      target.models[model].api_calls = (target.models[model].api_calls || 0) + (info.api_calls || 0);
+    }
+  };
 
   let data;
   try { data = JSON.parse(existing); } catch(e) { data = {}; }
@@ -278,9 +326,10 @@ MERGED=$(node -e "
   // Add session
   const session = { ...newStats };
   delete session.ai_files;
+  delete session.transcript_line_count;
   const exists = data.sessions.find(s => s.session_id === session.session_id);
   if (!exists) data.sessions.push(session);
-  else Object.assign(exists, session);
+  else mergeSession(exists, session);
 
   console.log(JSON.stringify(data));
 " "$(git notes --ref=gitprint show "$HEAD_SHA" 2>/dev/null || echo '{}')")
@@ -289,9 +338,10 @@ MERGED=$(node -e "
 NOTE_ERR=$(echo "$MERGED" | git notes --ref=gitprint add -f --file=- "$HEAD_SHA" 2>&1) || log_err "git notes write failed: $NOTE_ERR"
 log "note written to $HEAD_SHA (remaining delta)"
 
-# ─── Clean up state files ───
-rm -f "$CHECKPOINT_FILE" "$ACTIVE_FILE" 2>/dev/null
-log "cleaned up checkpoint and active session files"
+# ─── Update checkpoint + clean up active session marker ───
+write_checkpoint "$TOTAL_LINES"
+clear_active
+log "updated checkpoint and cleared active session marker"
 
 # ─── Push notes ───
 git push origin refs/notes/gitprint </dev/null 2>/dev/null &

@@ -1,8 +1,8 @@
 #!/bin/bash
 # Gitprint — Gemini CLI Stop Hook
-# Fires when a Gemini CLI / Antigravity session ends (SessionEnd hook)
-# Parses transcript for tokens, models, and per-file AI line counts
-# Stores data as a Git Note on HEAD (no files to commit/cleanup)
+# Fires when a Gemini CLI / Antigravity session ends.
+# With the post-commit hook handling committed attribution,
+# this hook only processes the remaining delta since the last checkpoint.
 
 # ─── Logging ───
 log() { [ "${GITPRINT_DEBUG:-0}" = "1" ] && echo "[gitprint:gemini] $*" >&2; }
@@ -38,12 +38,54 @@ if [ ! -f "$TRANSCRIPT_PATH" ]; then
   exit 0
 fi
 
-# ─── Parse transcript ───
+GIT_DIR=$(git rev-parse --git-dir 2>/dev/null) || exit 0
+CHECKPOINT_FILE="$GIT_DIR/gitprint-gemini-checkpoint.json"
+ACTIVE_FILE="$GIT_DIR/gitprint-gemini-active.json"
+
+write_checkpoint() {
+  node - "$CHECKPOINT_FILE" "$TRANSCRIPT_PATH" "$SESSION_ID" "$1" <<'NODEEOF'
+const fs = require('fs');
+const [filePath, transcriptPath, sessionId, lastLine] = process.argv.slice(2);
+
+try {
+  fs.writeFileSync(filePath, JSON.stringify({
+    transcript_path: transcriptPath,
+    session_id: sessionId || 'unknown',
+    last_line: Number(lastLine || 0),
+    updated: new Date().toISOString(),
+  }));
+} catch {}
+NODEEOF
+}
+
+clear_active() {
+  rm -f "$ACTIVE_FILE" 2>/dev/null
+}
+
+LAST_LINE=0
+if [ -f "$CHECKPOINT_FILE" ]; then
+  LAST_LINE=$(node -e "
+    try {
+      const cp = JSON.parse(require('fs').readFileSync('$CHECKPOINT_FILE', 'utf8'));
+      if (cp.transcript_path === '$TRANSCRIPT_PATH') {
+        console.log(cp.last_line || 0);
+      } else {
+        console.log(0);
+      }
+    } catch(e) { console.log(0); }
+  ")
+fi
+log "stop hook: checkpoint last_line=$LAST_LINE"
+
 STATS=$(node -e "
   const fs = require('fs');
-  const lines = fs.readFileSync('$TRANSCRIPT_PATH', 'utf8')
-    .split('\n')
-    .filter(Boolean);
+  const allLines = fs.readFileSync('$TRANSCRIPT_PATH', 'utf8').split('\n').filter(Boolean);
+  const deltaLines = allLines.slice($LAST_LINE);
+
+  if (deltaLines.length === 0) {
+    console.log(JSON.stringify({ empty: true, transcript_line_count: allLines.length }));
+    process.exit(0);
+  }
 
   let inputTokens = 0, outputTokens = 0, cacheCreation = 0, cacheRead = 0, turns = 0, apiCalls = 0;
   const models = {};
@@ -72,16 +114,13 @@ STATS=$(node -e "
     fileLineStats[fp].removed += removed;
   };
 
-  for (const line of lines) {
+  for (const line of deltaLines) {
     try {
       const entry = JSON.parse(line);
       if (entry.isSidechain || entry.isApiErrorMessage) continue;
 
-      // Count user messages as turns
       if (entry.type === 'human' || entry.type === 'user') turns++;
 
-      // Token tracking — Gemini uses message_update with tokens object
-      // Also support Claude-style assistant entries (defensive)
       if (entry.type === 'assistant' && entry.message?.usage) {
         const u = entry.message.usage;
         const inp = u.input_tokens || 0;
@@ -102,7 +141,6 @@ STATS=$(node -e "
         models[model].api_calls++;
       }
 
-      // Gemini message_update with tokens
       if (entry.type === 'message_update' && entry.tokens) {
         const inp = entry.tokens.input || entry.tokens.input_tokens || 0;
         const out = entry.tokens.output || entry.tokens.output_tokens || 0;
@@ -122,7 +160,6 @@ STATS=$(node -e "
         models[model].api_calls++;
       }
 
-      // Gemini usage object at top level
       if (entry.usage && !entry.message?.usage && entry.type !== 'message_update') {
         const u = entry.usage;
         const inp = u.input_tokens || u.prompt_tokens || 0;
@@ -143,14 +180,12 @@ STATS=$(node -e "
         models[model].api_calls++;
       }
 
-      // File + line tracking from tool_use blocks (Claude-style content array)
       if (entry.type === 'assistant' && entry.message?.content) {
         for (const block of entry.message.content) {
           if (block.type !== 'tool_use') continue;
           const name = block.name || '';
           const input = block.input || {};
 
-          // Gemini: replace / Edit / str_replace
           if (/^(replace|Edit|str_replace|str_replace_editor|edit)$/i.test(name)) {
             const fp = input.file_path || input.path || input.filePath;
             const oldStr = input.old_str || input.old_string || input.oldStr || '';
@@ -158,7 +193,6 @@ STATS=$(node -e "
             trackFile(fp, countLines(newStr), countLines(oldStr));
           }
 
-          // MultiEdit
           if (/^MultiEdit$/i.test(name)) {
             const fp = input.file_path || input.path || input.filePath;
             for (const edit of (input.edits || [])) {
@@ -166,7 +200,6 @@ STATS=$(node -e "
             }
           }
 
-          // Gemini: write_file / Write / Create
           if (/^(write_file|Write|Create|file_write|create_file|write)$/i.test(name)) {
             const fp = input.file_path || input.path || input.filePath;
             trackFile(fp, countLines(input.content || input.file_text || ''), 0);
@@ -174,7 +207,6 @@ STATS=$(node -e "
         }
       }
 
-      // Gemini tool_use at entry level (not nested in message.content)
       if (entry.type === 'tool_use' || entry.type === 'tool_call') {
         const name = entry.name || entry.tool_name || '';
         const input = entry.input || entry.args || {};
@@ -205,7 +237,6 @@ STATS=$(node -e "
     file, ai_lines_added: s.added, ai_lines_removed: s.removed
   }));
 
-  // ─── Cost estimation ($ per million tokens) ───
   const pricing = {
     'opus':   { input: 15, output: 75, cache_read: 1.50, cache_creation: 18.75 },
     'sonnet': { input: 3,  output: 15, cache_read: 0.30, cache_creation: 3.75 },
@@ -258,37 +289,94 @@ STATS=$(node -e "
     turns,
     api_calls: apiCalls,
     models,
-    ai_files: aiFiles
+    ai_files: aiFiles,
+    transcript_line_count: allLines.length
   }));
 ")
 
 if [ -z "$STATS" ] || [ "$STATS" = "{}" ]; then
   log "empty stats from transcript"
+  clear_active
   exit 0
 fi
 
-# ─── Get current HEAD SHA ───
+TOTAL_LINES=$(echo "$STATS" | node -e "
+  let d='';process.stdin.on('data',c=>d+=c);
+  process.stdin.on('end',()=>{
+    try { const s=JSON.parse(d); console.log(s.transcript_line_count || 0); }
+    catch(e) { console.log(0); }
+  });
+")
+
+IS_EMPTY=$(echo "$STATS" | node -e "
+  let d='';process.stdin.on('data',c=>d+=c);
+  process.stdin.on('end',()=>{
+    try { const s=JSON.parse(d); console.log(s.empty ? 'true' : 'false'); }
+    catch(e) { console.log('false'); }
+  });
+")
+
+if [ "$IS_EMPTY" = "true" ]; then
+  log "no remaining delta — all work already captured by post-commit hooks"
+  write_checkpoint "$TOTAL_LINES"
+  clear_active
+  exit 0
+fi
+
+HAS_CONTENT=$(echo "$STATS" | node -e "
+  let d='';process.stdin.on('data',c=>d+=c);
+  process.stdin.on('end',()=>{
+    try {
+      const s=JSON.parse(d);
+      const hasFiles = (s.ai_files||[]).length > 0;
+      const hasTokens = (s.input_tokens||0) + (s.output_tokens||0) > 0;
+      console.log((hasFiles || hasTokens) ? 'true' : 'false');
+    } catch(e) { console.log('false'); }
+  });
+")
+
+if [ "$HAS_CONTENT" != "true" ]; then
+  log "no AI content in remaining delta"
+  write_checkpoint "$TOTAL_LINES"
+  clear_active
+  exit 0
+fi
+
 HEAD_SHA=$(git rev-parse HEAD 2>/dev/null)
 if [ -z "$HEAD_SHA" ]; then
   log_err "not in a git repo or no commits"
   exit 0
 fi
 
-# ─── Read existing note (if any) and merge sessions ───
 MERGED=$(node -e "
   const existing = process.argv[1] || '{}';
   const newStats = $STATS;
 
+  const mergeSession = (target, source) => {
+    target.tool = source.tool || target.tool;
+    target.timestamp = source.timestamp || target.timestamp;
+    target.input_tokens = (target.input_tokens || 0) + (source.input_tokens || 0);
+    target.output_tokens = (target.output_tokens || 0) + (source.output_tokens || 0);
+    target.cache_creation_tokens = (target.cache_creation_tokens || 0) + (source.cache_creation_tokens || 0);
+    target.cache_read_tokens = (target.cache_read_tokens || 0) + (source.cache_read_tokens || 0);
+    target.estimated_cost = (target.estimated_cost || 0) + (source.estimated_cost || 0);
+    target.turns = (target.turns || 0) + (source.turns || 0);
+    target.api_calls = (target.api_calls || 0) + (source.api_calls || 0);
+
+    if (!target.models) target.models = {};
+    for (const [model, info] of Object.entries(source.models || {})) {
+      if (!target.models[model]) target.models[model] = { input_tokens: 0, output_tokens: 0, api_calls: 0 };
+      target.models[model].input_tokens += info.input_tokens || 0;
+      target.models[model].output_tokens += info.output_tokens || 0;
+      target.models[model].api_calls = (target.models[model].api_calls || 0) + (info.api_calls || 0);
+    }
+  };
+
   let data;
-  try {
-    data = JSON.parse(existing);
-  } catch(e) {
-    data = {};
-  }
+  try { data = JSON.parse(existing); } catch(e) { data = {}; }
   if (!data.sessions) data.sessions = [];
   if (!data.ai_files) data.ai_files = [];
 
-  // Merge AI file stats
   const fileMap = {};
   for (const f of data.ai_files) {
     fileMap[f.file] = { ai_lines_added: f.ai_lines_added || 0, ai_lines_removed: f.ai_lines_removed || 0 };
@@ -302,22 +390,33 @@ MERGED=$(node -e "
     file, ai_lines_added: s.ai_lines_added, ai_lines_removed: s.ai_lines_removed
   }));
 
-  // Add session (skip ai_files from session entry)
   const session = { ...newStats };
   delete session.ai_files;
+  delete session.transcript_line_count;
   const exists = data.sessions.find(s => s.session_id === session.session_id);
   if (!exists) data.sessions.push(session);
+  else mergeSession(exists, session);
 
   console.log(JSON.stringify(data));
 " "$(git notes --ref=gitprint show "$HEAD_SHA" 2>/dev/null || echo '{}')")
 
-# ─── Write git note ───
 NOTE_ERR=$(echo "$MERGED" | git notes --ref=gitprint add -f --file=- "$HEAD_SHA" 2>&1) || log_err "git notes write failed: $NOTE_ERR"
-log "note written to $HEAD_SHA"
+log "note written to $HEAD_SHA (remaining delta)"
 
-# ─── Push notes (best-effort, silent fail if offline) ───
+write_checkpoint "$TOTAL_LINES"
+clear_active
+log "updated checkpoint and cleared active session marker"
+
 git push origin refs/notes/gitprint </dev/null 2>/dev/null &
 disown 2>/dev/null
 log "push triggered in background"
+
+REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+POST_COMMIT_HOOK="$REPO_ROOT/.github/hooks/post-commit"
+if [ -x "$POST_COMMIT_HOOK" ]; then
+  "$POST_COMMIT_HOOK" </dev/null >/dev/null 2>&1 || log "post-commit uploader failed"
+else
+  log "post-commit uploader not installed"
+fi
 
 exit 0

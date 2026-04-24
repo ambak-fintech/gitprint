@@ -1,6 +1,7 @@
 const { describe, it, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 const { execSync } = require('child_process');
+const fs = require('fs');
 const path = require('path');
 const { createTestRepo, readGitNote, writeGitNote, GIT_ENV } = require('../helpers/git-repo');
 const { runHook } = require('../helpers/run-hook');
@@ -27,9 +28,12 @@ describe('merge logic', () => {
   });
 
   it('second session added alongside first', () => {
-    const transcript = path.join(FIXTURES, 'claude-session.jsonl');
-    runHook('stop.sh', { transcript_path: transcript, session_id: 'first' }, { cwd: dir });
-    runHook('stop.sh', { transcript_path: transcript, session_id: 'second' }, { cwd: dir });
+    const transcript1 = path.join(dir, 'merge-first.jsonl');
+    const transcript2 = path.join(dir, 'merge-second.jsonl');
+    fs.copyFileSync(path.join(FIXTURES, 'claude-session.jsonl'), transcript1);
+    fs.copyFileSync(path.join(FIXTURES, 'claude-session.jsonl'), transcript2);
+    runHook('stop.sh', { transcript_path: transcript1, session_id: 'first' }, { cwd: dir });
+    runHook('stop.sh', { transcript_path: transcript2, session_id: 'second' }, { cwd: dir });
     const note = readGitNote(dir);
     assert.strictEqual(note.sessions.length, 2);
     const ids = note.sessions.map(s => s.session_id);
@@ -46,21 +50,27 @@ describe('merge logic', () => {
   });
 
   it('file stats accumulate across sessions', () => {
-    const transcript = path.join(FIXTURES, 'claude-session.jsonl');
-    runHook('stop.sh', { transcript_path: transcript, session_id: 'acc-1' }, { cwd: dir });
-    runHook('stop.sh', { transcript_path: transcript, session_id: 'acc-2' }, { cwd: dir });
+    const transcript1 = path.join(dir, 'acc-1.jsonl');
+    const transcript2 = path.join(dir, 'acc-2.jsonl');
+    fs.copyFileSync(path.join(FIXTURES, 'claude-session.jsonl'), transcript1);
+    fs.copyFileSync(path.join(FIXTURES, 'claude-session.jsonl'), transcript2);
+    runHook('stop.sh', { transcript_path: transcript1, session_id: 'acc-1' }, { cwd: dir });
+    runHook('stop.sh', { transcript_path: transcript2, session_id: 'acc-2' }, { cwd: dir });
     const note = readGitNote(dir);
     const appFile = note.ai_files.find(f => f.file === 'src/app.js');
     assert.strictEqual(appFile.ai_lines_added, 20);
   });
 
   it('new files added alongside existing', () => {
-    const transcript = path.join(FIXTURES, 'claude-session.jsonl');
-    runHook('stop.sh', { transcript_path: transcript, session_id: 'files-1' }, { cwd: dir });
+    const transcript1 = path.join(dir, 'files-1.jsonl');
+    const transcript2 = path.join(dir, 'files-2.jsonl');
+    fs.copyFileSync(path.join(FIXTURES, 'claude-session.jsonl'), transcript1);
+    fs.copyFileSync(path.join(FIXTURES, 'claude-session.jsonl'), transcript2);
+    runHook('stop.sh', { transcript_path: transcript1, session_id: 'files-1' }, { cwd: dir });
     const note1 = readGitNote(dir);
     note1.ai_files.push({ file: 'src/extra.js', ai_lines_added: 5, ai_lines_removed: 0 });
     writeGitNote(dir, note1);
-    runHook('stop.sh', { transcript_path: transcript, session_id: 'files-2' }, { cwd: dir });
+    runHook('stop.sh', { transcript_path: transcript2, session_id: 'files-2' }, { cwd: dir });
     const note2 = readGitNote(dir);
     const files = note2.ai_files.map(f => f.file);
     assert.ok(files.includes('src/app.js'));
@@ -100,9 +110,12 @@ describe('merge logic', () => {
   });
 
   it('existing file stats updated, not replaced', () => {
-    const transcript = path.join(FIXTURES, 'claude-session.jsonl');
-    runHook('stop.sh', { transcript_path: transcript, session_id: 'upd-1' }, { cwd: dir });
-    runHook('stop.sh', { transcript_path: transcript, session_id: 'upd-2' }, { cwd: dir });
+    const transcript1 = path.join(dir, 'upd-1.jsonl');
+    const transcript2 = path.join(dir, 'upd-2.jsonl');
+    fs.copyFileSync(path.join(FIXTURES, 'claude-session.jsonl'), transcript1);
+    fs.copyFileSync(path.join(FIXTURES, 'claude-session.jsonl'), transcript2);
+    runHook('stop.sh', { transcript_path: transcript1, session_id: 'upd-1' }, { cwd: dir });
+    runHook('stop.sh', { transcript_path: transcript2, session_id: 'upd-2' }, { cwd: dir });
     const note = readGitNote(dir);
     const utilsFile = note.ai_files.find(f => f.file === 'src/utils.js');
     assert.strictEqual(utilsFile.ai_lines_added, 20); // 10 + 10

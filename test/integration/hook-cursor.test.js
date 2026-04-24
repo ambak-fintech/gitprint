@@ -76,4 +76,18 @@ describe('Cursor hook (cursor-stop.sh)', () => {
     const note = readGitNote(dir);
     assert.ok(note.sessions[0].estimated_cost >= 0);
   });
+
+  it('invokes the shared post-commit uploader when installed', () => {
+    const transcript = path.join(FIXTURES, 'cursor-session.jsonl');
+    const hooksDir = path.join(dir, '.github', 'hooks');
+    const markerFile = path.join(dir, 'cursor-post-commit-ran');
+
+    fs.mkdirSync(hooksDir, { recursive: true });
+    fs.writeFileSync(path.join(hooksDir, 'post-commit'), `#!/bin/bash\ntouch \"${markerFile}\"\n`);
+    fs.chmodSync(path.join(hooksDir, 'post-commit'), 0o755);
+
+    const result = runHook('cursor-stop.sh', { transcript_path: transcript, conversation_id: 'conv-post-commit' }, { cwd: dir });
+    assert.strictEqual(result.exitCode, 0);
+    assert.ok(fs.existsSync(markerFile));
+  });
 });

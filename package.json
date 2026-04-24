@@ -1,9 +1,17 @@
 {
   "name": "@ambak/gitprint",
-  "version": "0.3.0",
+  "version": "0.3.2",
   "description": "AI code attribution for pull requests — powered by Git Notes",
+  "files": [
+    "bin",
+    "lib",
+    "templates",
+    "setup.sh",
+    "README.md",
+    "LICENSE"
+  ],
   "bin": {
-    "gitprint": "./bin/cli.js"
+    "gitprint": "bin/cli.js"
   },
   "scripts": {
     "test": "node --test test/unit/*.test.js test/integration/*.test.js",
@@ -27,6 +35,6 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/ambak-fintech/gitprint"
+    "url": "git+https://github.com/ambak-fintech/gitprint.git"
   }
 }

@@ -2,7 +2,8 @@
 # Gitprint — Cursor Stop Hook
 # Fires when a Cursor session ends (sessionEnd hook)
 # Parses transcript for tokens, models, and per-file AI line counts
-# Stores data as a Git Note on HEAD (no files to commit/cleanup)
+# Stores data as a Git Note on HEAD, then best-effort reuses the shared
+# post-commit uploader to push note data to the configured platform.
 
 # ─── Logging ───
 log() { [ "${GITPRINT_DEBUG:-0}" = "1" ] && echo "[gitprint:cursor] $*" >&2; }
@@ -258,5 +259,14 @@ log "note written to $HEAD_SHA"
 git push origin refs/notes/gitprint </dev/null 2>/dev/null &
 disown 2>/dev/null
 log "push triggered in background"
+
+# ─── Reuse shared post-commit uploader (best-effort) ───
+REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+POST_COMMIT_HOOK="$REPO_ROOT/.github/hooks/post-commit"
+if [ -x "$POST_COMMIT_HOOK" ]; then
+  "$POST_COMMIT_HOOK" </dev/null >/dev/null 2>&1 || log "post-commit uploader failed"
+else
+  log "post-commit uploader not installed"
+fi
 
 exit 0

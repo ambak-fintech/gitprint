@@ -213,6 +213,7 @@ fi
 if [[ "$INSTALL_GEMINI" =~ ^[Yy] ]]; then
   echo -e "${BLUE}Installing Gemini CLI hook...${NC}"
   mkdir -p .gemini/hooks
+  download_hook "gemini-post-tool.sh" ".gemini/hooks/gitprint-post-tool.sh"
   download_hook "gemini-stop.sh" ".gemini/hooks/gitprint-stop.sh"
 
   # Register in settings.json
@@ -221,10 +222,19 @@ if [[ "$INSTALL_GEMINI" =~ ^[Yy] ]]; then
       const fs = require('fs');
       const existing = JSON.parse(fs.readFileSync('.gemini/settings.json', 'utf8'));
       if (!existing.hooks) existing.hooks = {};
+      if (!existing.hooks.AfterTool) existing.hooks.AfterTool = [];
       if (!existing.hooks.SessionEnd) existing.hooks.SessionEnd = [];
+      const hasAfterTool = existing.hooks.AfterTool.some(h =>
+        h.hooks?.some(hh => (hh.command || '').includes('gitprint-post-tool.sh'))
+      );
       const has = existing.hooks.SessionEnd.some(h =>
         h.hooks?.some(hh => (hh.command || '').includes('gitprint-stop.sh'))
       );
+      if (!hasAfterTool) {
+        existing.hooks.AfterTool.push({
+          hooks: [{ type: 'command', command: 'bash \"\$GEMINI_PROJECT_DIR\"/.gemini/hooks/gitprint-post-tool.sh' }]
+        });
+      }
       if (!has) {
         existing.hooks.SessionEnd.push({
           hooks: [{ type: 'command', command: 'bash \"\$GEMINI_PROJECT_DIR\"/.gemini/hooks/gitprint-stop.sh' }]
@@ -236,6 +246,16 @@ if [[ "$INSTALL_GEMINI" =~ ^[Yy] ]]; then
     cat > .gemini/settings.json << 'EOF'
 {
   "hooks": {
+    "AfterTool": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$GEMINI_PROJECT_DIR\"/.gemini/hooks/gitprint-post-tool.sh"
+          }
+        ]
+      }
+    ],
     "SessionEnd": [
       {
         "hooks": [
@@ -252,6 +272,7 @@ EOF
   fi
 
   GEMINI_INSTALLED=true
+  echo -e "  ${GREEN}+${NC} .gemini/hooks/gitprint-post-tool.sh"
   echo -e "  ${GREEN}+${NC} .gemini/hooks/gitprint-stop.sh"
   echo -e "  ${GREEN}+${NC} .gemini/settings.json"
 fi

@@ -96,11 +96,14 @@ describe('Claude Code hook (stop.sh)', () => {
   });
 
   it('merges with existing note on HEAD', () => {
-    const transcript = path.join(FIXTURES, 'claude-session.jsonl');
+    const transcript1 = path.join(dir, 'claude-session-1.jsonl');
+    const transcript2 = path.join(dir, 'claude-session-2.jsonl');
+    fs.copyFileSync(path.join(FIXTURES, 'claude-session.jsonl'), transcript1);
+    fs.copyFileSync(path.join(FIXTURES, 'claude-session.jsonl'), transcript2);
     // First session
-    runHook('stop.sh', { transcript_path: transcript, session_id: 'session-1' }, { cwd: dir });
+    runHook('stop.sh', { transcript_path: transcript1, session_id: 'session-1' }, { cwd: dir });
     // Second session
-    runHook('stop.sh', { transcript_path: transcript, session_id: 'session-2' }, { cwd: dir });
+    runHook('stop.sh', { transcript_path: transcript2, session_id: 'session-2' }, { cwd: dir });
     const note = readGitNote(dir);
     assert.strictEqual(note.sessions.length, 2);
     // File stats should accumulate
