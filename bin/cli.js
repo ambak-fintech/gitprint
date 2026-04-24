@@ -69,7 +69,7 @@ function templateDir() {
   return path.join(__dirname, '..', 'templates');
 }
 
-const PLATFORM_URL = 'http://localhost:3001';
+const PLATFORM_URL = 'https://devai.ambak.com';
 const GLOBAL_CONFIG_FILE = path.join(os.homedir(), '.gitprint');
 
 function readGlobalToken() {
@@ -317,6 +317,7 @@ const TOOLS = [
     detectHint: '`codex` command or ~/.codex/',
     hooks: [
       { src: 'codex-stop.sh', dest: '.codex/hooks/gitprint-stop.sh' },
+      { src: 'codex-post-tool.sh', dest: '.codex/hooks/gitprint-post-tool.sh' },
     ],
     config: {
       type: 'standalone-json',
@@ -324,15 +325,18 @@ const TOOLS = [
       content: {
         hooks: {
           Stop: [{ hooks: [{ type: 'command', command: '.codex/hooks/gitprint-stop.sh', timeout: 30 }] }],
+          PostToolUse: [{ hooks: [{ type: 'command', command: '.codex/hooks/gitprint-post-tool.sh', timeout: 10 }] }],
         },
       },
     },
     doctorChecks: [
       { type: 'file-exec', path: '.codex/hooks/gitprint-stop.sh' },
-      { type: 'standalone-json-check', path: '.codex/hooks.json', checks: ['hooks.Stop'] },
+      { type: 'file-exec', path: '.codex/hooks/gitprint-post-tool.sh' },
+      { type: 'standalone-json-check', path: '.codex/hooks.json', checks: ['hooks.Stop', 'hooks.PostToolUse'] },
     ],
     uninstallFiles: [
       '.codex/hooks/gitprint-stop.sh',
+      '.codex/hooks/gitprint-post-tool.sh',
       '.codex/hooks.json',
     ],
     cleanupDir: '.codex/hooks',

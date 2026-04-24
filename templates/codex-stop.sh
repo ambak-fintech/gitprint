@@ -206,6 +206,22 @@ STATS=$(node -e "
 
 [ -z "$STATS" ] || [ "$STATS" = "null" ] && { log "empty stats"; exit 0; }
 
+# ─── Prefer pending file for ai_files (written by post-tool hook) ───
+PENDING_FILE="$GIT_DIR/gitprint-codex-pending.json"
+if [ -f "$PENDING_FILE" ]; then
+  STATS=$(node -e "
+    const fs = require('fs');
+    const stats = JSON.parse(process.argv[1]);
+    const pending = JSON.parse(fs.readFileSync('$PENDING_FILE', 'utf8'));
+    stats.ai_files = Object.entries(pending).map(([file, s]) => ({
+      file, ai_lines_added: s.added || 0, ai_lines_removed: s.removed || 0
+    }));
+    console.log(JSON.stringify(stats));
+  " "$STATS")
+  rm -f "$PENDING_FILE"
+  log "merged pending file into stats"
+fi
+
 AI_FILES_COUNT=$(echo "$STATS" | node -e "
   let d=''; process.stdin.on('data',c=>d+=c);
   process.stdin.on('end',()=>{ try { console.log((JSON.parse(d).ai_files||[]).length); } catch { console.log(0); } });
