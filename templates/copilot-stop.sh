@@ -129,10 +129,20 @@ if [ -z "$GIT_DIR" ]; then
   exit 0
 fi
 
+REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+STATE_HELPER="$REPO_ROOT/.github/hooks/gitprint-state.js"
+STATE_FILES=$(node - "$STATE_HELPER" "$REPO_ROOT" "$GIT_DIR" <<'NODEEOF'
+const state = require(process.argv[2]);
+const context = state.resolveRepoStateContext({ cwd: process.argv[3], gitDir: process.argv[4], env: process.env });
+const paths = state.resolveToolStatePaths(context, 'copilot');
+process.stdout.write(`${paths.pendingFile}\n${paths.activeFile}\n${paths.checkpointFile}`);
+NODEEOF
+)
+
 # ─── Read pending file data from postToolUse hook ───
-PENDING_FILE="$GIT_DIR/gitprint-copilot-pending.json"
-ACTIVE_FILE="$GIT_DIR/gitprint-copilot-active.json"
-CHECKPOINT_FILE="$GIT_DIR/gitprint-copilot-checkpoint.json"
+PENDING_FILE=$(printf '%s\n' "$STATE_FILES" | sed -n '1p')
+ACTIVE_FILE=$(printf '%s\n' "$STATE_FILES" | sed -n '2p')
+CHECKPOINT_FILE=$(printf '%s\n' "$STATE_FILES" | sed -n '3p')
 PENDING_DATA="{}"
 CHECKPOINT_DATA="{}"
 if [ -f "$PENDING_FILE" ]; then

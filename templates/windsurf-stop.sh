@@ -49,18 +49,22 @@ if [ ! -f "$TRANSCRIPT_PATH" ]; then
 fi
 
 GIT_DIR=$(git rev-parse --git-dir 2>/dev/null) || exit 0
+REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+STATE_HELPER="$REPO_ROOT/.github/hooks/gitprint-state.js"
 
-node - "$GIT_DIR/gitprint-windsurf-active.json" "$TRANSCRIPT_PATH" "$SESSION_ID" "$HOOK_CWD" <<'NODEEOF'
-const fs = require('fs');
-const [filePath, transcriptPath, sessionId, cwd] = process.argv.slice(2);
+node - "$STATE_HELPER" "$REPO_ROOT" "$GIT_DIR" "$TRANSCRIPT_PATH" "$SESSION_ID" "$HOOK_CWD" <<'NODEEOF'
+const state = require(process.argv[2]);
+const context = state.resolveRepoStateContext({ cwd: process.argv[3], gitDir: process.argv[4], env: process.env });
+const activeFile = state.resolveToolStatePaths(context, 'windsurf').activeFile;
+const [transcriptPath, sessionId, cwd] = process.argv.slice(5);
 
 try {
-  fs.writeFileSync(filePath, JSON.stringify({
+  state.writeJsonAtomic(activeFile, {
     transcript_path: transcriptPath,
     session_id: sessionId || 'unknown',
     cwd: cwd || process.cwd(),
     updated: new Date().toISOString(),
-  }));
+  });
 } catch {}
 NODEEOF
 

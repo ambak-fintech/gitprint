@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const { createTestRepo } = require('../helpers/git-repo');
 const { runHook } = require('../helpers/run-hook');
+const { getToolPaths } = require('../helpers/state-path');
 
 describe('Codex hook (codex-stop.sh)', () => {
   let dir, cleanup;
@@ -30,7 +31,7 @@ describe('Codex hook (codex-stop.sh)', () => {
     assert.strictEqual(result.exitCode, 0);
     assert.strictEqual(result.stdout.trim(), '{}');
 
-    const active = JSON.parse(fs.readFileSync(path.join(dir, '.git', 'gitprint-codex-active.json'), 'utf8'));
+    const active = JSON.parse(fs.readFileSync(getToolPaths(dir, 'codex').activeFile, 'utf8'));
     assert.strictEqual(active.session_id, 'codex-session-1');
     assert.strictEqual(active.transcript_path, transcript);
     assert.strictEqual(active.model, 'gpt-5-codex');

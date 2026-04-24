@@ -29,19 +29,23 @@ CWD=$(echo "$INPUT" | node -e "
 [ -f "$TRANSCRIPT_PATH" ] || { log "transcript not found: $TRANSCRIPT_PATH"; exit 0; }
 
 GIT_DIR=$(git rev-parse --git-dir 2>/dev/null) || { log "not a git repo"; exit 0; }
+REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+STATE_HELPER="$REPO_ROOT/.github/hooks/gitprint-state.js"
 
-node - "$GIT_DIR/gitprint-codex-active.json" "$TRANSCRIPT_PATH" "$SESSION_ID" "$MODEL" "$CWD" <<'NODEEOF'
-const fs = require('fs');
-const [filePath, transcriptPath, sessionId, model, cwd] = process.argv.slice(2);
+node - "$STATE_HELPER" "$REPO_ROOT" "$GIT_DIR" "$TRANSCRIPT_PATH" "$SESSION_ID" "$MODEL" "$CWD" <<'NODEEOF'
+const state = require(process.argv[2]);
+const context = state.resolveRepoStateContext({ cwd: process.argv[3], gitDir: process.argv[4], env: process.env });
+const activeFile = state.resolveToolStatePaths(context, 'codex').activeFile;
+const [transcriptPath, sessionId, model, cwd] = process.argv.slice(5);
 
 try {
-  fs.writeFileSync(filePath, JSON.stringify({
+  state.writeJsonAtomic(activeFile, {
     transcript_path: transcriptPath,
     session_id: sessionId,
     model: model || '',
     cwd: cwd || process.cwd(),
     updated: new Date().toISOString(),
-  }));
+  });
 } catch {}
 NODEEOF
 

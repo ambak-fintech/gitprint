@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const { createTestRepo } = require('../helpers/git-repo');
 const { runHook } = require('../helpers/run-hook');
+const { getToolPaths } = require('../helpers/state-path');
 
 const FIXTURES = path.join(__dirname, '..', 'fixtures', 'transcripts');
 
@@ -22,7 +23,7 @@ describe('Windsurf hook (windsurf-stop.sh)', () => {
     const transcript = path.join(FIXTURES, 'windsurf-session.jsonl');
     runHook('windsurf-stop.sh', { transcript_path: transcript, trajectory_id: 'traj-1', cwd: dir }, { cwd: dir });
 
-    const active = JSON.parse(fs.readFileSync(path.join(dir, '.git', 'gitprint-windsurf-active.json'), 'utf8'));
+    const active = JSON.parse(fs.readFileSync(getToolPaths(dir, 'windsurf').activeFile, 'utf8'));
     assert.strictEqual(active.transcript_path, transcript);
     assert.strictEqual(active.session_id, 'traj-1');
   });
@@ -35,7 +36,7 @@ describe('Windsurf hook (windsurf-stop.sh)', () => {
       cwd: dir,
     }, { cwd: dir });
 
-    const active = JSON.parse(fs.readFileSync(path.join(dir, '.git', 'gitprint-windsurf-active.json'), 'utf8'));
+    const active = JSON.parse(fs.readFileSync(getToolPaths(dir, 'windsurf').activeFile, 'utf8'));
     assert.strictEqual(active.transcript_path, transcript);
     assert.strictEqual(active.session_id, 'traj-tool-info');
   });
@@ -44,7 +45,7 @@ describe('Windsurf hook (windsurf-stop.sh)', () => {
     const transcript = path.join(FIXTURES, 'windsurf-session.jsonl');
     runHook('windsurf-stop.sh', { transcript_path: transcript, execution_id: 'exec-1', cwd: dir }, { cwd: dir });
 
-    const active = JSON.parse(fs.readFileSync(path.join(dir, '.git', 'gitprint-windsurf-active.json'), 'utf8'));
+    const active = JSON.parse(fs.readFileSync(getToolPaths(dir, 'windsurf').activeFile, 'utf8'));
     assert.strictEqual(active.session_id, 'exec-1');
   });
 

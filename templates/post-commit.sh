@@ -7,6 +7,8 @@ log() { [ "${GITPRINT_DEBUG:-0}" = "1" ] && echo "[gitprint] $*" >&2; }
 log_err() { echo "[gitprint] ERROR: $*" >&2; }
 
 GIT_DIR=$(git rev-parse --git-dir 2>/dev/null) || exit 0
+REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+STATE_HELPER="$REPO_ROOT/.github/hooks/gitprint-state.js"
 CONFIG_FILE="$GIT_DIR/gitprint-config"
 
 PLATFORM_URL="${AI_PLATFORM_URL:-$(git config --global gitprint.platformUrl 2>/dev/null || true)}"
@@ -29,7 +31,7 @@ SENDER=$(git config user.email 2>/dev/null || git config user.name 2>/dev/null |
 
 log "post-commit: branch=${CURRENT_BRANCH:-detached} base=$BASE_BRANCH repo=$REPO sender=$SENDER"
 
-node - "$PLATFORM_URL" "$PLATFORM_TOKEN" "$BASE_BRANCH" "$CURRENT_BRANCH" "$REPO" "$SENDER" "$GIT_DIR" << 'NODEEOF'
+node - "$STATE_HELPER" "$REPO_ROOT" "$PLATFORM_URL" "$PLATFORM_TOKEN" "$BASE_BRANCH" "$CURRENT_BRANCH" "$REPO" "$SENDER" "$GIT_DIR" << 'NODEEOF'
 (async () => {
   const { execSync, spawn } = require('child_process');
   const fs = require('fs');
@@ -37,25 +39,51 @@ node - "$PLATFORM_URL" "$PLATFORM_TOKEN" "$BASE_BRANCH" "$CURRENT_BRANCH" "$REPO
   const https = require('https');
   const http = require('http');
 
-  const [platformUrl, platformToken, base, branch, repo, sender, gitDir] = process.argv.slice(2);
-  const activeFile = path.join(gitDir, 'gitprint-active.json');
-  const checkpointFile = path.join(gitDir, 'gitprint-checkpoint.json');
-  const copilotActiveFile = path.join(gitDir, 'gitprint-copilot-active.json');
-  const copilotPendingFile = path.join(gitDir, 'gitprint-copilot-pending.json');
-  const copilotCheckpointFile = path.join(gitDir, 'gitprint-copilot-checkpoint.json');
-  const geminiActiveFile = path.join(gitDir, 'gitprint-gemini-active.json');
-  const geminiCheckpointFile = path.join(gitDir, 'gitprint-gemini-checkpoint.json');
-  const codexActiveFile = path.join(gitDir, 'gitprint-codex-active.json');
-  const codexCheckpointFile = path.join(gitDir, 'gitprint-codex-checkpoint.json');
-  const windsurfActiveFile = path.join(gitDir, 'gitprint-windsurf-active.json');
-  const windsurfCheckpointFile = path.join(gitDir, 'gitprint-windsurf-checkpoint.json');
-  const augmentActiveFile = path.join(gitDir, 'gitprint-augment-active.json');
-  const augmentPendingFile = path.join(gitDir, 'gitprint-augment-pending.json');
-  const augmentCheckpointFile = path.join(gitDir, 'gitprint-augment-checkpoint.json');
-  const opencodeActiveFile = path.join(gitDir, 'gitprint-opencode-active.json');
-  const opencodePendingFile = path.join(gitDir, 'gitprint-opencode-pending.json');
-  const opencodeCheckpointFile = path.join(gitDir, 'gitprint-opencode-checkpoint.json');
-  const outboxFile = path.join(gitDir, 'gitprint-outbox.jsonl');
+  const [stateHelperPath, repoRoot, platformUrl, platformToken, base, branch, repo, sender, gitDir] = process.argv.slice(2);
+  const state = require(stateHelperPath);
+  const stateContext = state.resolveRepoStateContext({ cwd: repoRoot, gitDir, env: process.env });
+  const claudeState = state.resolveToolStatePaths(stateContext, 'claude');
+  const copilotState = state.resolveToolStatePaths(stateContext, 'copilot');
+  const geminiState = state.resolveToolStatePaths(stateContext, 'gemini');
+  const codexState = state.resolveToolStatePaths(stateContext, 'codex');
+  const windsurfState = state.resolveToolStatePaths(stateContext, 'windsurf');
+  const augmentState = state.resolveToolStatePaths(stateContext, 'augment');
+  const opencodeState = state.resolveToolStatePaths(stateContext, 'opencode');
+  const outboxFile = state.resolveOutboxFile(stateContext);
+
+  const legacyFiles = {
+    claude: {
+      active: path.join(gitDir, 'gitprint-active.json'),
+      checkpoint: path.join(gitDir, 'gitprint-checkpoint.json'),
+    },
+    copilot: {
+      active: path.join(gitDir, 'gitprint-copilot-active.json'),
+      pending: path.join(gitDir, 'gitprint-copilot-pending.json'),
+      checkpoint: path.join(gitDir, 'gitprint-copilot-checkpoint.json'),
+    },
+    gemini: {
+      active: path.join(gitDir, 'gitprint-gemini-active.json'),
+      checkpoint: path.join(gitDir, 'gitprint-gemini-checkpoint.json'),
+    },
+    codex: {
+      active: path.join(gitDir, 'gitprint-codex-active.json'),
+      checkpoint: path.join(gitDir, 'gitprint-codex-checkpoint.json'),
+    },
+    windsurf: {
+      active: path.join(gitDir, 'gitprint-windsurf-active.json'),
+      checkpoint: path.join(gitDir, 'gitprint-windsurf-checkpoint.json'),
+    },
+    augment: {
+      active: path.join(gitDir, 'gitprint-augment-active.json'),
+      pending: path.join(gitDir, 'gitprint-augment-pending.json'),
+      checkpoint: path.join(gitDir, 'gitprint-augment-checkpoint.json'),
+    },
+    opencode: {
+      active: path.join(gitDir, 'gitprint-opencode-active.json'),
+      pending: path.join(gitDir, 'gitprint-opencode-pending.json'),
+      checkpoint: path.join(gitDir, 'gitprint-opencode-checkpoint.json'),
+    },
+  };
 
   function debug(message) {
     if (process.env.GITPRINT_DEBUG === '1') {
@@ -64,11 +92,11 @@ node - "$PLATFORM_URL" "$PLATFORM_TOKEN" "$BASE_BRANCH" "$CURRENT_BRANCH" "$REPO
   }
 
   function readJson(filePath) {
-    try {
-      return JSON.parse(fs.readFileSync(filePath, 'utf8'));
-    } catch {
-      return null;
-    }
+    return state.readJson(filePath, null);
+  }
+
+  function readPreferred(primaryFile, legacyFile) {
+    return readJson(primaryFile) || readJson(legacyFile);
   }
 
   function readGitNote(sha) {
@@ -149,78 +177,29 @@ node - "$PLATFORM_URL" "$PLATFORM_TOKEN" "$BASE_BRANCH" "$CURRENT_BRANCH" "$REPO
     return JSON.stringify(data);
   }
 
-  function writeCheckpoint(transcriptPath, sessionId, lastLine) {
+  function writeTranscriptCheckpoint(primaryFile, transcriptPath, sessionId, lastLine) {
     try {
-      fs.writeFileSync(checkpointFile, JSON.stringify({
+      state.writeJsonAtomic(primaryFile, {
         transcript_path: transcriptPath,
         session_id: sessionId || 'unknown',
         last_line: Number(lastLine || 0),
         updated: new Date().toISOString(),
-      }));
-    } catch {}
+      });
+    } catch (error) {
+      process.stderr.write(`[gitprint] failed to write checkpoint ${primaryFile}: ${error.message}\n`);
+    }
   }
 
-  function writeGeminiCheckpoint(transcriptPath, sessionId, lastLine) {
+  function writePendingCheckpoint(primaryFile, cwd, files) {
     try {
-      fs.writeFileSync(geminiCheckpointFile, JSON.stringify({
-        transcript_path: transcriptPath,
-        session_id: sessionId || 'unknown',
-        last_line: Number(lastLine || 0),
-        updated: new Date().toISOString(),
-      }));
-    } catch {}
-  }
-
-  function writeCodexCheckpoint(transcriptPath, sessionId, lastLine) {
-    try {
-      fs.writeFileSync(codexCheckpointFile, JSON.stringify({
-        transcript_path: transcriptPath,
-        session_id: sessionId || 'unknown',
-        last_line: Number(lastLine || 0),
-        updated: new Date().toISOString(),
-      }));
-    } catch {}
-  }
-
-  function writeWindsurfCheckpoint(transcriptPath, sessionId, lastLine) {
-    try {
-      fs.writeFileSync(windsurfCheckpointFile, JSON.stringify({
-        transcript_path: transcriptPath,
-        session_id: sessionId || 'unknown',
-        last_line: Number(lastLine || 0),
-        updated: new Date().toISOString(),
-      }));
-    } catch {}
-  }
-
-  function writeCopilotCheckpoint(cwd, files) {
-    try {
-      fs.writeFileSync(copilotCheckpointFile, JSON.stringify({
+      state.writeJsonAtomic(primaryFile, {
         cwd,
         files,
         updated: new Date().toISOString(),
-      }));
-    } catch {}
-  }
-
-  function writeAugmentCheckpoint(cwd, files) {
-    try {
-      fs.writeFileSync(augmentCheckpointFile, JSON.stringify({
-        cwd,
-        files,
-        updated: new Date().toISOString(),
-      }));
-    } catch {}
-  }
-
-  function writeOpencodeCheckpoint(cwd, files) {
-    try {
-      fs.writeFileSync(opencodeCheckpointFile, JSON.stringify({
-        cwd,
-        files,
-        updated: new Date().toISOString(),
-      }));
-    } catch {}
+      });
+    } catch (error) {
+      process.stderr.write(`[gitprint] failed to write checkpoint ${primaryFile}: ${error.message}\n`);
+    }
   }
 
   function fileDelta(currentFiles, previousFiles) {
@@ -961,7 +940,7 @@ node - "$PLATFORM_URL" "$PLATFORM_TOKEN" "$BASE_BRANCH" "$CURRENT_BRANCH" "$REPO
   }
 
   function materializeActiveClaudeNote() {
-    const active = readJson(activeFile);
+    const active = readPreferred(claudeState.activeFile, legacyFiles.claude.active);
     if (!active?.transcript_path) return false;
     if (!fs.existsSync(active.transcript_path)) {
       debug(`active transcript not found: ${active.transcript_path}`);
@@ -975,13 +954,13 @@ node - "$PLATFORM_URL" "$PLATFORM_TOKEN" "$BASE_BRANCH" "$CURRENT_BRANCH" "$REPO
       return false;
     }
 
-    const checkpoint = readJson(checkpointFile);
+    const checkpoint = readPreferred(claudeState.checkpointFile, legacyFiles.claude.checkpoint);
     const lastLine = checkpoint && checkpoint.transcript_path === active.transcript_path
       ? Number(checkpoint.last_line || 0)
       : 0;
 
     const stats = parseClaudeDelta(active.transcript_path, lastLine, active.session_id || 'unknown');
-    writeCheckpoint(active.transcript_path, active.session_id || 'unknown', stats.transcript_line_count || lastLine);
+    writeTranscriptCheckpoint(claudeState.checkpointFile, active.transcript_path, active.session_id || 'unknown', stats.transcript_line_count || lastLine);
 
     if (stats.empty) {
       debug('no new Claude delta for current commit');
@@ -1011,7 +990,7 @@ node - "$PLATFORM_URL" "$PLATFORM_TOKEN" "$BASE_BRANCH" "$CURRENT_BRANCH" "$REPO
   }
 
   function materializeActiveGeminiNote() {
-    const active = readJson(geminiActiveFile);
+    const active = readPreferred(geminiState.activeFile, legacyFiles.gemini.active);
     if (!active?.transcript_path) return false;
     if (!fs.existsSync(active.transcript_path)) {
       debug(`active Gemini transcript not found: ${active.transcript_path}`);
@@ -1025,13 +1004,13 @@ node - "$PLATFORM_URL" "$PLATFORM_TOKEN" "$BASE_BRANCH" "$CURRENT_BRANCH" "$REPO
       return false;
     }
 
-    const checkpoint = readJson(geminiCheckpointFile);
+    const checkpoint = readPreferred(geminiState.checkpointFile, legacyFiles.gemini.checkpoint);
     const lastLine = checkpoint && checkpoint.transcript_path === active.transcript_path
       ? Number(checkpoint.last_line || 0)
       : 0;
 
     const stats = parseGeminiDelta(active.transcript_path, lastLine, active.session_id || 'unknown', active.cwd);
-    writeGeminiCheckpoint(active.transcript_path, active.session_id || 'unknown', stats.transcript_line_count || lastLine);
+    writeTranscriptCheckpoint(geminiState.checkpointFile, active.transcript_path, active.session_id || 'unknown', stats.transcript_line_count || lastLine);
 
     if (stats.empty) {
       debug('no new Gemini delta for current commit');
@@ -1061,7 +1040,7 @@ node - "$PLATFORM_URL" "$PLATFORM_TOKEN" "$BASE_BRANCH" "$CURRENT_BRANCH" "$REPO
   }
 
   function materializeActiveCodexNote() {
-    const active = readJson(codexActiveFile);
+    const active = readPreferred(codexState.activeFile, legacyFiles.codex.active);
     if (!active?.transcript_path) return false;
     if (!fs.existsSync(active.transcript_path)) {
       debug(`active Codex transcript not found: ${active.transcript_path}`);
@@ -1075,13 +1054,13 @@ node - "$PLATFORM_URL" "$PLATFORM_TOKEN" "$BASE_BRANCH" "$CURRENT_BRANCH" "$REPO
       return false;
     }
 
-    const checkpoint = readJson(codexCheckpointFile);
+    const checkpoint = readPreferred(codexState.checkpointFile, legacyFiles.codex.checkpoint);
     const lastLine = checkpoint && checkpoint.transcript_path === active.transcript_path
       ? Number(checkpoint.last_line || 0)
       : 0;
 
     const stats = parseCodexDelta(active.transcript_path, lastLine, active.session_id || 'unknown', active.model || '', active.cwd);
-    writeCodexCheckpoint(active.transcript_path, active.session_id || 'unknown', stats.transcript_line_count || lastLine);
+    writeTranscriptCheckpoint(codexState.checkpointFile, active.transcript_path, active.session_id || 'unknown', stats.transcript_line_count || lastLine);
 
     if (stats.empty) {
       debug('no new Codex delta for current commit');
@@ -1111,7 +1090,7 @@ node - "$PLATFORM_URL" "$PLATFORM_TOKEN" "$BASE_BRANCH" "$CURRENT_BRANCH" "$REPO
   }
 
   function materializeActiveWindsurfNote() {
-    const active = readJson(windsurfActiveFile);
+    const active = readPreferred(windsurfState.activeFile, legacyFiles.windsurf.active);
     if (!active?.transcript_path) return false;
     if (!fs.existsSync(active.transcript_path)) {
       debug(`active Windsurf transcript not found: ${active.transcript_path}`);
@@ -1125,13 +1104,13 @@ node - "$PLATFORM_URL" "$PLATFORM_TOKEN" "$BASE_BRANCH" "$CURRENT_BRANCH" "$REPO
       return false;
     }
 
-    const checkpoint = readJson(windsurfCheckpointFile);
+    const checkpoint = readPreferred(windsurfState.checkpointFile, legacyFiles.windsurf.checkpoint);
     const lastLine = checkpoint && checkpoint.transcript_path === active.transcript_path
       ? Number(checkpoint.last_line || 0)
       : 0;
 
     const stats = parseWindsurfDelta(active.transcript_path, lastLine, active.session_id || 'unknown', active.cwd);
-    writeWindsurfCheckpoint(active.transcript_path, active.session_id || 'unknown', stats.transcript_line_count || lastLine);
+    writeTranscriptCheckpoint(windsurfState.checkpointFile, active.transcript_path, active.session_id || 'unknown', stats.transcript_line_count || lastLine);
 
     if (stats.empty) {
       debug('no new Windsurf delta for current commit');
@@ -1161,8 +1140,8 @@ node - "$PLATFORM_URL" "$PLATFORM_TOKEN" "$BASE_BRANCH" "$CURRENT_BRANCH" "$REPO
   }
 
   function materializeCopilotPendingNote() {
-    const active = readJson(copilotActiveFile);
-    const pending = readJson(copilotPendingFile);
+    const active = readPreferred(copilotState.activeFile, legacyFiles.copilot.active);
+    const pending = readPreferred(copilotState.pendingFile, legacyFiles.copilot.pending);
     if (!active?.cwd || !pending || Object.keys(pending).length === 0) return false;
 
     let headSha;
@@ -1172,11 +1151,11 @@ node - "$PLATFORM_URL" "$PLATFORM_TOKEN" "$BASE_BRANCH" "$CURRENT_BRANCH" "$REPO
       return false;
     }
 
-    const checkpoint = readJson(copilotCheckpointFile);
+    const checkpoint = readPreferred(copilotState.checkpointFile, legacyFiles.copilot.checkpoint);
     const previousFiles = checkpoint && checkpoint.cwd === active.cwd ? (checkpoint.files || {}) : {};
     const deltaFiles = fileDelta(pending, previousFiles);
 
-    writeCopilotCheckpoint(active.cwd, pending);
+    writePendingCheckpoint(copilotState.checkpointFile, active.cwd, pending);
 
     if (Object.keys(deltaFiles).length === 0) {
       debug('no new Copilot delta for current commit');
@@ -1206,8 +1185,8 @@ node - "$PLATFORM_URL" "$PLATFORM_TOKEN" "$BASE_BRANCH" "$CURRENT_BRANCH" "$REPO
   }
 
   function materializeAugmentPendingNote() {
-    const active = readJson(augmentActiveFile);
-    const pending = readJson(augmentPendingFile);
+    const active = readPreferred(augmentState.activeFile, legacyFiles.augment.active);
+    const pending = readPreferred(augmentState.pendingFile, legacyFiles.augment.pending);
     if (!active?.cwd || !pending || Object.keys(pending).length === 0) return false;
 
     let headSha;
@@ -1217,11 +1196,11 @@ node - "$PLATFORM_URL" "$PLATFORM_TOKEN" "$BASE_BRANCH" "$CURRENT_BRANCH" "$REPO
       return false;
     }
 
-    const checkpoint = readJson(augmentCheckpointFile);
+    const checkpoint = readPreferred(augmentState.checkpointFile, legacyFiles.augment.checkpoint);
     const previousFiles = checkpoint && checkpoint.cwd === active.cwd ? (checkpoint.files || {}) : {};
     const deltaFiles = fileDelta(pending, previousFiles);
 
-    writeAugmentCheckpoint(active.cwd, pending);
+    writePendingCheckpoint(augmentState.checkpointFile, active.cwd, pending);
 
     if (Object.keys(deltaFiles).length === 0) {
       debug('no new Augment delta for current commit');
@@ -1251,8 +1230,8 @@ node - "$PLATFORM_URL" "$PLATFORM_TOKEN" "$BASE_BRANCH" "$CURRENT_BRANCH" "$REPO
   }
 
   function materializeOpencodePendingNote() {
-    const active = readJson(opencodeActiveFile);
-    const pending = readJson(opencodePendingFile);
+    const active = readPreferred(opencodeState.activeFile, legacyFiles.opencode.active);
+    const pending = readPreferred(opencodeState.pendingFile, legacyFiles.opencode.pending);
     if (!active?.cwd || !pending || Object.keys(pending).length === 0) return false;
 
     let headSha;
@@ -1262,11 +1241,11 @@ node - "$PLATFORM_URL" "$PLATFORM_TOKEN" "$BASE_BRANCH" "$CURRENT_BRANCH" "$REPO
       return false;
     }
 
-    const checkpoint = readJson(opencodeCheckpointFile);
+    const checkpoint = readPreferred(opencodeState.checkpointFile, legacyFiles.opencode.checkpoint);
     const previousFiles = checkpoint && checkpoint.cwd === active.cwd ? (checkpoint.files || {}) : {};
     const deltaFiles = fileDelta(pending, previousFiles);
 
-    writeOpencodeCheckpoint(active.cwd, pending);
+    writePendingCheckpoint(opencodeState.checkpointFile, active.cwd, pending);
 
     if (Object.keys(deltaFiles).length === 0) {
       debug('no new OpenCode delta for current commit');

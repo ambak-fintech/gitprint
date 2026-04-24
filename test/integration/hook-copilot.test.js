@@ -6,6 +6,7 @@ const os = require('os');
 const crypto = require('crypto');
 const { createTestRepo, readGitNote, GIT_ENV } = require('../helpers/git-repo');
 const { runHook } = require('../helpers/run-hook');
+const { getToolPaths } = require('../helpers/state-path');
 
 describe('Copilot hooks', () => {
   let dir, cleanup;
@@ -25,8 +26,7 @@ describe('Copilot hooks', () => {
         toolArgs: JSON.stringify({ path: 'src/handler.js', old_string: 'old', new_string: 'new\nline' }),
         cwd: dir,
       }, { cwd: dir });
-      const gitDir = path.join(dir, '.git');
-      const pending = JSON.parse(fs.readFileSync(path.join(gitDir, 'gitprint-copilot-pending.json'), 'utf8'));
+      const pending = JSON.parse(fs.readFileSync(getToolPaths(dir, 'copilot').pendingFile, 'utf8'));
       assert.ok(pending['src/handler.js']);
       assert.strictEqual(pending['src/handler.js'].added, 2);
       assert.strictEqual(pending['src/handler.js'].removed, 1);
@@ -38,8 +38,7 @@ describe('Copilot hooks', () => {
         toolArgs: JSON.stringify({ path: 'src/new.js', content: 'a\nb\nc' }),
         cwd: dir,
       }, { cwd: dir });
-      const gitDir = path.join(dir, '.git');
-      const pending = JSON.parse(fs.readFileSync(path.join(gitDir, 'gitprint-copilot-pending.json'), 'utf8'));
+      const pending = JSON.parse(fs.readFileSync(getToolPaths(dir, 'copilot').pendingFile, 'utf8'));
       assert.strictEqual(pending['src/new.js'].added, 3);
       assert.strictEqual(pending['src/new.js'].removed, 0);
     });
@@ -56,8 +55,7 @@ describe('Copilot hooks', () => {
         }),
         cwd: dir,
       }, { cwd: dir });
-      const gitDir = path.join(dir, '.git');
-      const pending = JSON.parse(fs.readFileSync(path.join(gitDir, 'gitprint-copilot-pending.json'), 'utf8'));
+      const pending = JSON.parse(fs.readFileSync(getToolPaths(dir, 'copilot').pendingFile, 'utf8'));
       assert.strictEqual(pending['src/multi.js'].added, 3); // 2 + 1
       assert.strictEqual(pending['src/multi.js'].removed, 3); // 1 + 2
     });
@@ -68,8 +66,7 @@ describe('Copilot hooks', () => {
         toolArgs: JSON.stringify({ path: 'src/handler.js' }),
         cwd: dir,
       }, { cwd: dir });
-      const gitDir = path.join(dir, '.git');
-      assert.ok(!fs.existsSync(path.join(gitDir, 'gitprint-copilot-pending.json')));
+      assert.ok(!fs.existsSync(getToolPaths(dir, 'copilot').pendingFile));
     });
 
     it('accumulates across multiple invocations', () => {
@@ -83,8 +80,7 @@ describe('Copilot hooks', () => {
         toolArgs: JSON.stringify({ path: 'src/app.js', old_string: 'c', new_string: 'd\ne' }),
         cwd: dir,
       }, { cwd: dir });
-      const gitDir = path.join(dir, '.git');
-      const pending = JSON.parse(fs.readFileSync(path.join(gitDir, 'gitprint-copilot-pending.json'), 'utf8'));
+      const pending = JSON.parse(fs.readFileSync(getToolPaths(dir, 'copilot').pendingFile, 'utf8'));
       assert.strictEqual(pending['src/app.js'].added, 3); // 1 + 2
       assert.strictEqual(pending['src/app.js'].removed, 2); // 1 + 1
     });
@@ -93,8 +89,8 @@ describe('Copilot hooks', () => {
   describe('copilot-stop.sh (with pending data)', () => {
     it('reads pending file and writes note', () => {
       // Write pending file manually
-      const gitDir = path.join(dir, '.git');
-      fs.writeFileSync(path.join(gitDir, 'gitprint-copilot-pending.json'), JSON.stringify({
+      fs.mkdirSync(path.dirname(getToolPaths(dir, 'copilot').pendingFile), { recursive: true });
+      fs.writeFileSync(getToolPaths(dir, 'copilot').pendingFile, JSON.stringify({
         'src/handler.js': { added: 5, removed: 2 },
       }));
 
@@ -122,8 +118,8 @@ describe('Copilot hooks', () => {
     });
 
     it('deletes pending file after reading', () => {
-      const gitDir = path.join(dir, '.git');
-      fs.writeFileSync(path.join(gitDir, 'gitprint-copilot-pending.json'), JSON.stringify({
+      fs.mkdirSync(path.dirname(getToolPaths(dir, 'copilot').pendingFile), { recursive: true });
+      fs.writeFileSync(getToolPaths(dir, 'copilot').pendingFile, JSON.stringify({
         'src/app.js': { added: 1, removed: 0 },
       }));
 
@@ -136,7 +132,7 @@ describe('Copilot hooks', () => {
 
       try {
         runHook('copilot-stop.sh', { cwd: dir }, { cwd: dir, env: { HOME: fakeHome } });
-        assert.ok(!fs.existsSync(path.join(gitDir, 'gitprint-copilot-pending.json')));
+        assert.ok(!fs.existsSync(getToolPaths(dir, 'copilot').pendingFile));
       } finally {
         fs.rmSync(fakeHome, { recursive: true, force: true });
       }

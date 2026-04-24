@@ -51,8 +51,8 @@ setup.sh                       → Alternative curl-based installer (no npm)
 
 Claude now uses a three-step lifecycle so AI data is attached to the commit that was just created:
 
-1. `post-tool-use.sh` runs after each Claude tool call and refreshes `.git/gitprint-active.json` with the current `transcript_path` + `session_id`.
-2. `post-commit.sh` reads that active transcript, parses only the delta since `.git/gitprint-checkpoint.json`, writes the resulting Git Note to the new `HEAD` commit, updates the checkpoint, and then POSTs note data to the configured platform.
+1. `post-tool-use.sh` runs after each Claude tool call and refreshes Gitprint's local state dir with the current `transcript_path` + `session_id`.
+2. `post-commit.sh` reads that active transcript, parses only the delta since the stored checkpoint, writes the resulting Git Note to the new `HEAD` commit, updates the checkpoint, and then POSTs note data to the configured platform.
 3. `stop.sh` runs when the Claude session ends and only processes any remaining uncommitted transcript delta since the last checkpoint.
 
 The transcript parser still:
@@ -86,8 +86,8 @@ Copilot CLI's `sessionEnd` hook only provides `{timestamp, cwd, reason}` — no 
 - Receives `{timestamp, cwd, toolName, toolArgs, toolResult}` on stdin
 - `toolArgs` is a JSON string requiring double-parse
 - Tracks `replace_string_in_file`, `multi_replace_string_in_file`, `create_file`
-- Appends file edit stats to `.git/gitprint-copilot-pending.json`
-- Refreshes `.git/gitprint-copilot-active.json` so `post-commit` can attach the latest Copilot file delta to the new commit
+- Appends file edit stats to Gitprint's local state dir
+- Refreshes Copilot active state so `post-commit` can attach the latest Copilot file delta to the new commit
 
 **`copilot-stop.sh` (sessionEnd hook):**
 1. Extracts `cwd` from stdin JSON
@@ -96,7 +96,7 @@ Copilot CLI's `sessionEnd` hook only provides `{timestamp, cwd, reason}` — no 
 4. Among matches, picks dir with most recently modified `events.jsonl`
 5. Uses directory basename as `session_id`
 6. Parses `events.jsonl` for tokens/models (tries both `prompt_tokens` and `input_tokens` field names)
-7. Reads `.git/gitprint-copilot-pending.json`, subtracts `.git/gitprint-copilot-checkpoint.json`, and treats only the leftover delta as uncommitted file edits
+7. Reads the stored Copilot pending delta, subtracts the Copilot checkpoint, and treats only the leftover delta as uncommitted file edits
 8. Deletes pending/active/checkpoint state after reading
 9. Best-effort invokes `.github/hooks/post-commit` afterward to upload note data, but cannot guarantee exact commit-time session attribution because `sessionEnd` still arrives after commits
 9. Same merge/write/push logic as other hooks
@@ -114,8 +114,8 @@ Input fields: `path`, `old_string`, `new_string`, `content`, `edits`/`replacemen
 
 Gemini CLI exposes both `AfterTool` and `SessionEnd`, so it now follows a Claude-style lifecycle for file attribution:
 
-1. `gemini-post-tool.sh` runs on `AfterTool` and refreshes `.git/gitprint-gemini-active.json` with the current `transcript_path` + `session_id`.
-2. `post-commit.sh` reads that active Gemini transcript, parses only the delta since `.git/gitprint-gemini-checkpoint.json`, writes the resulting Git Note to the new `HEAD` commit, updates the checkpoint, and then POSTs note data to the configured platform.
+1. `gemini-post-tool.sh` runs on `AfterTool` and refreshes Gemini active state with the current `transcript_path` + `session_id`.
+2. `post-commit.sh` reads that active Gemini transcript, parses only the delta since the Gemini checkpoint, writes the resulting Git Note to the new `HEAD` commit, updates the checkpoint, and then POSTs note data to the configured platform.
 3. `gemini-stop.sh` runs on `SessionEnd` and only processes any remaining uncommitted transcript delta since the last checkpoint.
 
 **Stdin:** `{ "session_id": "...", "transcript_path": "...", "cwd": "...", "hook_event_name": "SessionEnd", "timestamp": "..." }`
@@ -141,8 +141,8 @@ Single-hook architecture using `post_cascade_response_with_transcript` hook.
 **Stdin:** `{ "transcript_path": "...", "trajectory_id": "...", "execution_id": "...", "timestamp": "..." }`
 
 - `trajectory_id` → `session_id`
-- Refreshes `.git/gitprint-windsurf-active.json` with the current transcript path after each Cascade response
-- `post-commit` parses transcript delta since `.git/gitprint-windsurf-checkpoint.json` and attaches it to the new commit
+- Refreshes Windsurf active state with the current transcript path after each Cascade response
+- `post-commit` parses transcript delta since the Windsurf checkpoint and attaches it to the new commit
 - No dedicated session-end hook exists, so uncommitted tail work remains pending until a later commit/response
 - Sets `"tool": "windsurf"` in session data
 
@@ -154,8 +154,8 @@ Single-hook architecture using `post_cascade_response_with_transcript` hook.
 
 Codex currently exposes a turn-scoped `Stop` hook with `session_id` + `transcript_path`, so it uses a Windsurf-style lifecycle for commit attribution:
 
-- `codex-stop.sh` refreshes `.git/gitprint-codex-active.json` with the current transcript path, session id, and model each time a Codex turn stops
-- `post-commit` parses transcript delta since `.git/gitprint-codex-checkpoint.json` and attaches it to the new commit
+- `codex-stop.sh` refreshes Codex active state with the current transcript path, session id, and model each time a Codex turn stops
+- `post-commit` parses transcript delta since the Codex checkpoint and attaches it to the new commit
 - Codex `PostToolUse` exists, but currently only emits `Bash`, so file attribution still comes from transcript parsing rather than tool hooks
 
 **Transcript parsing specifics:**
@@ -176,13 +176,13 @@ Two-hook pattern like Copilot. No transcript path, no token data in payloads.
 - Fires after each tool use during a session
 - Receives `{ "tool_name": "str-replace-editor", "tool_input": {...}, "file_changes": [...] }` on stdin
 - Tool mapping: `str-replace-editor` → extract `file_path`, `old_string`, `new_string`; `save-file`/`create-file` → extract `file_path`, `content`
-- Accumulates to `.git/gitprint-augment-pending.json`
-- Refreshes `.git/gitprint-augment-active.json` so `post-commit` can attach the latest Augment file delta to the new commit
+- Accumulates to Gitprint's local state dir
+- Refreshes Augment active state so `post-commit` can attach the latest Augment file delta to the new commit
 
 **`augment-stop.sh` (Stop hook):**
 - Receives `{ "agent_stop_cause": "...", "conversation_id": "..." }` on stdin
 - `conversation_id` → `session_id`
-- Reads `.git/gitprint-augment-pending.json`, subtracts `.git/gitprint-augment-checkpoint.json`, and treats only the leftover delta as uncommitted file edits
+- Reads the stored Augment pending delta, subtracts the Augment checkpoint, and treats only the leftover delta as uncommitted file edits
 - No token tracking (set to 0)
 - Sets `"tool": "augment"` in session data
 - Skips writing note if no leftover file edits were tracked
@@ -198,9 +198,9 @@ Two-hook pattern like Copilot. No transcript path, no token data in payloads.
 
 **Plugin structure:**
 - Exported plugin function returns current OpenCode hook handlers (not the old `setup(api)` shape)
-- `tool.execute.after` updates `.git/gitprint-opencode-pending.json` with file-edit deltas and refreshes `.git/gitprint-opencode-active.json`
+- `tool.execute.after` updates OpenCode pending state with file-edit deltas and refreshes OpenCode active state
 - `message.updated` events track token usage and models in memory for the active session
-- `post-commit` attaches the pending OpenCode file delta to the new commit using `.git/gitprint-opencode-checkpoint.json`
+- `post-commit` attaches the pending OpenCode file delta to the new commit using the OpenCode checkpoint
 - `session.idle` writes any leftover uncommitted delta plus session metadata to `HEAD`, invokes `.github/hooks/post-commit`, and clears pending state
 
 Sets `"tool": "opencode"` in session data.
@@ -335,7 +335,7 @@ Unlike Claude Code and Cursor, Copilot's `sessionEnd` hook doesn't provide a tra
 - `events.jsonl` schema is undocumented — all field access is defensive with fallbacks
 - `workspace.yaml` is parsed via regex (`cwd:\s*(.+)`) instead of a YAML parser
 - `sessionEnd` may fire per-prompt in interactive mode (deduped by session_id in merge logic)
-- Pending file (`.git/gitprint-copilot-pending.json`) may be left behind on crash — overwritten by next session
+- Pending Copilot state may be left behind on crash — overwritten by next session
 
 ### Detection in CLI
 

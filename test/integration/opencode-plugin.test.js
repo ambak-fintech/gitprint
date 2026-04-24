@@ -4,8 +4,10 @@ const fs = require('fs');
 const path = require('path');
 const { createTestRepo, readGitNote, makeCommit, GIT_ENV } = require('../helpers/git-repo');
 const { runHook } = require('../helpers/run-hook');
+const { getStateDir, getToolPaths } = require('../helpers/state-path');
 
 const PLUGIN_PATH = path.join(__dirname, '..', '..', 'templates', 'opencode-plugin.js');
+const STATE_HELPER_PATH = path.join(__dirname, '..', '..', 'templates', 'state-helper.js');
 
 async function loadHooks(ctx) {
   delete require.cache[require.resolve(PLUGIN_PATH)];
@@ -26,6 +28,9 @@ describe('OpenCode plugin (opencode-plugin.js)', () => {
     originalCwd = process.cwd();
     process.chdir(dir);
     Object.assign(process.env, GIT_ENV);
+    process.env.GITPRINT_STATE_DIR = getStateDir(dir);
+    fs.mkdirSync(path.join(dir, '.github', 'hooks'), { recursive: true });
+    fs.copyFileSync(STATE_HELPER_PATH, path.join(dir, '.github', 'hooks', 'gitprint-state.js'));
   });
 
   afterEach(() => {
@@ -48,10 +53,10 @@ describe('OpenCode plugin (opencode-plugin.js)', () => {
       args: { file_path: 'src/app.js', old_string: 'old', new_string: 'new\nline' },
     });
 
-    const pending = JSON.parse(fs.readFileSync(path.join(dir, '.git', 'gitprint-opencode-pending.json'), 'utf8'));
+    const pending = JSON.parse(fs.readFileSync(getToolPaths(dir, 'opencode').pendingFile, 'utf8'));
     assert.strictEqual(pending['src/app.js'].added, 2);
     assert.strictEqual(pending['src/app.js'].removed, 1);
-    assert.ok(fs.existsSync(path.join(dir, '.git', 'gitprint-opencode-active.json')));
+    assert.ok(fs.existsSync(getToolPaths(dir, 'opencode').activeFile));
   });
 
   it('captures token usage from message.updated events', async () => {
@@ -101,7 +106,7 @@ describe('OpenCode plugin (opencode-plugin.js)', () => {
     assert.strictEqual(file.ai_lines_added, 2);
     assert.strictEqual(file.ai_lines_removed, 1);
 
-    const checkpoint = JSON.parse(fs.readFileSync(path.join(dir, '.git', 'gitprint-opencode-checkpoint.json'), 'utf8'));
+    const checkpoint = JSON.parse(fs.readFileSync(getToolPaths(dir, 'opencode').checkpointFile, 'utf8'));
     assert.strictEqual(checkpoint.files['src/opencode.js'].added, 2);
     assert.strictEqual(checkpoint.files['src/opencode.js'].removed, 1);
   });
@@ -149,9 +154,9 @@ describe('OpenCode plugin (opencode-plugin.js)', () => {
     assert.strictEqual(leftoverFile.ai_lines_added, 3);
     assert.strictEqual(leftoverFile.ai_lines_removed, 0);
 
-    assert.ok(!fs.existsSync(path.join(dir, '.git', 'gitprint-opencode-pending.json')));
-    assert.ok(!fs.existsSync(path.join(dir, '.git', 'gitprint-opencode-active.json')));
-    assert.ok(!fs.existsSync(path.join(dir, '.git', 'gitprint-opencode-checkpoint.json')));
+    assert.ok(!fs.existsSync(getToolPaths(dir, 'opencode').pendingFile));
+    assert.ok(!fs.existsSync(getToolPaths(dir, 'opencode').activeFile));
+    assert.ok(!fs.existsSync(getToolPaths(dir, 'opencode').checkpointFile));
   });
 
   it('skips session.idle when no data exists', async () => {

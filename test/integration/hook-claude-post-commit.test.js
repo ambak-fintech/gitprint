@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const { createTestRepo, readGitNote, makeCommit } = require('../helpers/git-repo');
 const { runHook } = require('../helpers/run-hook');
+const { getToolPaths } = require('../helpers/state-path');
 
 const FIXTURES = path.join(__dirname, '..', 'fixtures', 'transcripts');
 
@@ -28,7 +29,7 @@ describe('Claude Code post-commit flow', () => {
       session_id: 'commit-session-1',
     }, { cwd: dir });
 
-    const activeFile = path.join(dir, '.git', 'gitprint-active.json');
+    const activeFile = getToolPaths(dir, 'claude').activeFile;
     assert.ok(fs.existsSync(activeFile));
 
     makeCommit(dir, 'commit with active Claude session');
@@ -46,7 +47,7 @@ describe('Claude Code post-commit flow', () => {
     assert.strictEqual(appFile.ai_lines_added, 10);
     assert.strictEqual(appFile.ai_lines_removed, 6);
 
-    const checkpoint = JSON.parse(fs.readFileSync(path.join(dir, '.git', 'gitprint-checkpoint.json'), 'utf8'));
+    const checkpoint = JSON.parse(fs.readFileSync(getToolPaths(dir, 'claude').checkpointFile, 'utf8'));
     assert.strictEqual(checkpoint.transcript_path, transcript);
     assert.strictEqual(checkpoint.session_id, 'commit-session-1');
     assert.strictEqual(checkpoint.last_line, 4);
@@ -119,8 +120,8 @@ describe('Claude Code post-commit flow', () => {
     assert.strictEqual(leftoverFile.ai_lines_added, 2);
     assert.strictEqual(leftoverFile.ai_lines_removed, 1);
 
-    const checkpoint = JSON.parse(fs.readFileSync(path.join(dir, '.git', 'gitprint-checkpoint.json'), 'utf8'));
+    const checkpoint = JSON.parse(fs.readFileSync(getToolPaths(dir, 'claude').checkpointFile, 'utf8'));
     assert.strictEqual(checkpoint.last_line, 6);
-    assert.ok(!fs.existsSync(path.join(dir, '.git', 'gitprint-active.json')));
+    assert.ok(!fs.existsSync(getToolPaths(dir, 'claude').activeFile));
   });
 });

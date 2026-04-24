@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const { createTestRepo, readGitNote, makeCommit } = require('../helpers/git-repo');
 const { runHook } = require('../helpers/run-hook');
+const { getToolPaths } = require('../helpers/state-path');
 
 const FIXTURES = path.join(__dirname, '..', 'fixtures', 'transcripts');
 
@@ -46,7 +47,7 @@ describe('Windsurf post-commit flow', () => {
     assert.strictEqual(file.ai_lines_added, 2);
     assert.strictEqual(file.ai_lines_removed, 1);
 
-    const checkpoint = JSON.parse(fs.readFileSync(path.join(dir, '.git', 'gitprint-windsurf-checkpoint.json'), 'utf8'));
+    const checkpoint = JSON.parse(fs.readFileSync(getToolPaths(dir, 'windsurf').checkpointFile, 'utf8'));
     assert.strictEqual(checkpoint.transcript_path, transcript);
     assert.strictEqual(checkpoint.session_id, 'traj-1');
     assert.strictEqual(checkpoint.last_line, 2);

@@ -7,6 +7,7 @@ const readline = require('readline');
 const os = require('os');
 const { PRICING, matchPricing, sessionCost, fmt, fmtCost, getToolName } = require('../lib/utils');
 const { checkForUpdate, runUpdate } = require('../lib/update');
+const stateHelper = require('../templates/state-helper.js');
 
 const BLUE = '\x1b[34m';
 const GREEN = '\x1b[32m';
@@ -120,6 +121,7 @@ const TOOLS = [
     hooks: [
       { src: 'stop.sh', dest: '.claude/hooks/stop.sh' },
       { src: 'post-tool-use.sh', dest: '.claude/hooks/post-tool-use.sh' },
+      { src: 'state-helper.js', dest: '.github/hooks/gitprint-state.js', noExec: true },
       { src: 'post-commit.sh', dest: '.github/hooks/post-commit' },
     ],
     config: {
@@ -141,11 +143,13 @@ const TOOLS = [
     uninstallFiles: [
       '.claude/hooks/stop.sh',
       '.claude/hooks/post-tool-use.sh',
+      '.github/hooks/gitprint-state.js',
       '.github/hooks/post-commit',
     ],
     doctorChecks: [
       { type: 'file-exec', path: '.claude/hooks/stop.sh' },
       { type: 'file-exec', path: '.claude/hooks/post-tool-use.sh' },
+      { type: 'file-exists', path: '.github/hooks/gitprint-state.js' },
       { type: 'file-exec', path: '.github/hooks/post-commit' },
       { type: 'dry-run', path: '.claude/hooks/stop.sh', stdin: '{"transcript_path":"/dev/null","session_id":"doctor-test"}' },
       { type: 'settings-json', path: '.claude/settings.json', hookKey: 'Stop', checkField: 'stop.sh' },
@@ -1021,6 +1025,46 @@ function doctor() {
     }
   } else {
     console.log(`  ${YELLOW}!${NC} platform config not set — local post-commit ingest will be skipped`);
+  }
+
+  // State directory check
+  console.log('');
+  console.log(`  ${DIM}State directory${NC}`);
+  const stateContext = stateHelper.resolveRepoStateContext({
+    cwd: root,
+    gitDir: drGitDir || path.join(root, '.git'),
+    env: process.env,
+  });
+  if (stateHelper.isRepoStateWritable(stateContext)) {
+    console.log(`  ${GREEN}+${NC} ${stateContext.repoStateDir} (writable)`);
+  } else {
+    console.log(`  ${RED}x${NC} ${stateContext.repoStateDir} (not writable)`);
+    ok = false;
+  }
+
+  const legacyStateFiles = [
+    'gitprint-active.json',
+    'gitprint-checkpoint.json',
+    'gitprint-copilot-active.json',
+    'gitprint-copilot-pending.json',
+    'gitprint-copilot-checkpoint.json',
+    'gitprint-gemini-active.json',
+    'gitprint-gemini-checkpoint.json',
+    'gitprint-codex-active.json',
+    'gitprint-codex-checkpoint.json',
+    'gitprint-windsurf-active.json',
+    'gitprint-windsurf-checkpoint.json',
+    'gitprint-augment-active.json',
+    'gitprint-augment-pending.json',
+    'gitprint-augment-checkpoint.json',
+    'gitprint-opencode-active.json',
+    'gitprint-opencode-pending.json',
+    'gitprint-opencode-checkpoint.json',
+  ].filter((file) => drGitDir && fs.existsSync(path.join(drGitDir, file)));
+  if (legacyStateFiles.length > 0) {
+    console.log(`  ${YELLOW}!${NC} legacy .git gitprint state files still present`);
+  } else {
+    console.log(`  ${GREEN}+${NC} no legacy .git gitprint state files detected`);
   }
 
   // Legacy workflow check

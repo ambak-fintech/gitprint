@@ -39,21 +39,30 @@ if [ ! -f "$TRANSCRIPT_PATH" ]; then
 fi
 
 GIT_DIR=$(git rev-parse --git-dir 2>/dev/null) || exit 0
-CHECKPOINT_FILE="$GIT_DIR/gitprint-gemini-checkpoint.json"
-ACTIVE_FILE="$GIT_DIR/gitprint-gemini-active.json"
+REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+STATE_HELPER="$REPO_ROOT/.github/hooks/gitprint-state.js"
+STATE_FILES=$(node - "$STATE_HELPER" "$REPO_ROOT" "$GIT_DIR" <<'NODEEOF'
+const state = require(process.argv[2]);
+const context = state.resolveRepoStateContext({ cwd: process.argv[3], gitDir: process.argv[4], env: process.env });
+const paths = state.resolveToolStatePaths(context, 'gemini');
+process.stdout.write(`${paths.checkpointFile}\n${paths.activeFile}`);
+NODEEOF
+)
+CHECKPOINT_FILE=$(printf '%s\n' "$STATE_FILES" | sed -n '1p')
+ACTIVE_FILE=$(printf '%s\n' "$STATE_FILES" | sed -n '2p')
 
 write_checkpoint() {
-  node - "$CHECKPOINT_FILE" "$TRANSCRIPT_PATH" "$SESSION_ID" "$1" <<'NODEEOF'
-const fs = require('fs');
-const [filePath, transcriptPath, sessionId, lastLine] = process.argv.slice(2);
+  node - "$STATE_HELPER" "$CHECKPOINT_FILE" "$TRANSCRIPT_PATH" "$SESSION_ID" "$1" <<'NODEEOF'
+const state = require(process.argv[2]);
+const [filePath, transcriptPath, sessionId, lastLine] = process.argv.slice(3);
 
 try {
-  fs.writeFileSync(filePath, JSON.stringify({
+  state.writeJsonAtomic(filePath, {
     transcript_path: transcriptPath,
     session_id: sessionId || 'unknown',
     last_line: Number(lastLine || 0),
     updated: new Date().toISOString(),
-  }));
+  });
 } catch {}
 NODEEOF
 }

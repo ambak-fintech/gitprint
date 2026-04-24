@@ -6,6 +6,7 @@ const os = require('os');
 const crypto = require('crypto');
 const { createTestRepo, readGitNote, makeCommit } = require('../helpers/git-repo');
 const { runHook } = require('../helpers/run-hook');
+const { getToolPaths } = require('../helpers/state-path');
 
 describe('Copilot post-commit flow', () => {
   let dir, cleanup;
@@ -25,7 +26,7 @@ describe('Copilot post-commit flow', () => {
       cwd: dir,
     }, { cwd: dir });
 
-    assert.ok(fs.existsSync(path.join(dir, '.git', 'gitprint-copilot-active.json')));
+    assert.ok(fs.existsSync(getToolPaths(dir, 'copilot').activeFile));
 
     makeCommit(dir, 'copilot delta commit');
     const result = runHook('post-commit.sh', '', { cwd: dir });
@@ -40,7 +41,7 @@ describe('Copilot post-commit flow', () => {
     assert.strictEqual(file.ai_lines_added, 2);
     assert.strictEqual(file.ai_lines_removed, 1);
 
-    const checkpoint = JSON.parse(fs.readFileSync(path.join(dir, '.git', 'gitprint-copilot-checkpoint.json'), 'utf8'));
+    const checkpoint = JSON.parse(fs.readFileSync(getToolPaths(dir, 'copilot').checkpointFile, 'utf8'));
     assert.strictEqual(checkpoint.files['src/copilot.js'].added, 2);
     assert.strictEqual(checkpoint.files['src/copilot.js'].removed, 1);
   });
@@ -91,9 +92,9 @@ describe('Copilot post-commit flow', () => {
       assert.strictEqual(leftoverFile.ai_lines_added, 3);
       assert.strictEqual(leftoverFile.ai_lines_removed, 0);
 
-      assert.ok(!fs.existsSync(path.join(dir, '.git', 'gitprint-copilot-pending.json')));
-      assert.ok(!fs.existsSync(path.join(dir, '.git', 'gitprint-copilot-active.json')));
-      assert.ok(!fs.existsSync(path.join(dir, '.git', 'gitprint-copilot-checkpoint.json')));
+      assert.ok(!fs.existsSync(getToolPaths(dir, 'copilot').pendingFile));
+      assert.ok(!fs.existsSync(getToolPaths(dir, 'copilot').activeFile));
+      assert.ok(!fs.existsSync(getToolPaths(dir, 'copilot').checkpointFile));
     } finally {
       fs.rmSync(fakeHome, { recursive: true, force: true });
     }

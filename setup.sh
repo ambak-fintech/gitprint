@@ -70,8 +70,12 @@ BASE_BRANCH="${BASE_BRANCH:-$DEFAULT_BASE}"
 # ─── Claude Code (always installed) ───
 echo -e "${BLUE}Installing Claude Code hook...${NC}"
 mkdir -p .claude/hooks
+mkdir -p .github/hooks
 download_hook "stop.sh" ".claude/hooks/stop.sh"
+curl -sSfL "${BASE_URL}/templates/state-helper.js" -o ".github/hooks/gitprint-state.js" || { echo -e "${RED}Download failed: state-helper.js${NC}"; exit 1; }
+chmod +x ".github/hooks/gitprint-state.js"
 echo -e "  ${GREEN}+${NC} .claude/hooks/stop.sh"
+echo -e "  ${GREEN}+${NC} .github/hooks/gitprint-state.js"
 
 # Claude Code settings (merge if exists)
 if [ -f .claude/settings.json ]; then

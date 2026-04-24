@@ -241,7 +241,7 @@ runs-on: self-hosted
 ## How It Works
 
 1. You write code with an AI tool (Claude Code, Cursor, Copilot, etc.)
-2. Tool/session hooks capture transcript paths or file-edit deltas as local git metadata state
+2. Tool/session hooks capture transcript paths or file-edit deltas in Gitprint's local machine state directory outside the repo
 3. `git post-commit` attaches the newest available AI delta to the commit that was just created whenever the tool supports that lifecycle
 4. Final session hooks add any leftover uncommitted delta or delayed session metadata
 5. When you push, the GitHub Action reads notes across all commits in your PR

@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const { createTestRepo, readGitNote, makeCommit } = require('../helpers/git-repo');
 const { runHook } = require('../helpers/run-hook');
+const { getToolPaths } = require('../helpers/state-path');
 
 describe('Augment post-commit flow', () => {
   let dir, cleanup;
@@ -23,7 +24,7 @@ describe('Augment post-commit flow', () => {
       cwd: dir,
     }, { cwd: dir });
 
-    assert.ok(fs.existsSync(path.join(dir, '.git', 'gitprint-augment-active.json')));
+    assert.ok(fs.existsSync(getToolPaths(dir, 'augment').activeFile));
 
     makeCommit(dir, 'augment delta commit');
     const result = runHook('post-commit.sh', '', { cwd: dir });
@@ -38,7 +39,7 @@ describe('Augment post-commit flow', () => {
     assert.strictEqual(file.ai_lines_added, 2);
     assert.strictEqual(file.ai_lines_removed, 1);
 
-    const checkpoint = JSON.parse(fs.readFileSync(path.join(dir, '.git', 'gitprint-augment-checkpoint.json'), 'utf8'));
+    const checkpoint = JSON.parse(fs.readFileSync(getToolPaths(dir, 'augment').checkpointFile, 'utf8'));
     assert.strictEqual(checkpoint.files['src/augment.py'].added, 2);
     assert.strictEqual(checkpoint.files['src/augment.py'].removed, 1);
   });
@@ -79,8 +80,8 @@ describe('Augment post-commit flow', () => {
     assert.strictEqual(leftoverFile.ai_lines_added, 3);
     assert.strictEqual(leftoverFile.ai_lines_removed, 0);
 
-    assert.ok(!fs.existsSync(path.join(dir, '.git', 'gitprint-augment-pending.json')));
-    assert.ok(!fs.existsSync(path.join(dir, '.git', 'gitprint-augment-active.json')));
-    assert.ok(!fs.existsSync(path.join(dir, '.git', 'gitprint-augment-checkpoint.json')));
+    assert.ok(!fs.existsSync(getToolPaths(dir, 'augment').pendingFile));
+    assert.ok(!fs.existsSync(getToolPaths(dir, 'augment').activeFile));
+    assert.ok(!fs.existsSync(getToolPaths(dir, 'augment').checkpointFile));
   });
 });

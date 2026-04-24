@@ -66,14 +66,23 @@ if [ -z "$GIT_DIR" ]; then
   exit 0
 fi
 
-PENDING_FILE="$GIT_DIR/gitprint-copilot-pending.json"
-ACTIVE_FILE="$GIT_DIR/gitprint-copilot-active.json"
+REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+STATE_HELPER="$REPO_ROOT/.github/hooks/gitprint-state.js"
+STATE_FILES=$(node - "$STATE_HELPER" "$REPO_ROOT" "$GIT_DIR" <<'NODEEOF'
+const state = require(process.argv[2]);
+const context = state.resolveRepoStateContext({ cwd: process.argv[3], gitDir: process.argv[4], env: process.env });
+const paths = state.resolveToolStatePaths(context, 'copilot');
+process.stdout.write(`${paths.pendingFile}\n${paths.activeFile}`);
+NODEEOF
+)
+PENDING_FILE=$(printf '%s\n' "$STATE_FILES" | sed -n '1p')
+ACTIVE_FILE=$(printf '%s\n' "$STATE_FILES" | sed -n '2p')
 
 # ─── Extract file stats and merge into pending file ───
-node -e "
-  const fs = require('fs');
-  const toolData = $TOOL_DATA;
-  const pendingPath = '$PENDING_FILE';
+node - "$STATE_HELPER" "$PENDING_FILE" "$TOOL_DATA" 2>/dev/null <<'NODEEOF'
+  const state = require(process.argv[2]);
+  const pendingPath = process.argv[3];
+  const toolData = JSON.parse(process.argv[4]);
 
   const countLines = (str) => {
     if (!str) return 0;
@@ -82,12 +91,7 @@ node -e "
   };
 
   // Read existing pending data
-  let pending = {};
-  try {
-    pending = JSON.parse(fs.readFileSync(pendingPath, 'utf8'));
-  } catch(e) {
-    pending = {};
-  }
+  let pending = state.readJson(pendingPath, {});
 
   const repoRoot = (() => { try { return require('child_process').execSync('git rev-parse --show-toplevel', { encoding: 'utf8' }).trim(); } catch { return toolData.cwd || process.cwd(); } })();
   const trackFile = (fp, added, removed) => {
@@ -131,19 +135,21 @@ node -e "
     trackFile(fp, countLines(args.content || ''), 0);
   }
 
-  fs.writeFileSync(pendingPath, JSON.stringify(pending));
-" 2>/dev/null || log_err "failed to update pending file"
+  state.writeJsonAtomic(pendingPath, pending);
+NODEEOF
+if [ $? -ne 0 ]; then log_err "failed to update pending file"; fi
 
-node -e "
-  const fs = require('fs');
-  const toolData = $TOOL_DATA;
-  const activePath = '$ACTIVE_FILE';
+node - "$STATE_HELPER" "$ACTIVE_FILE" "$TOOL_DATA" 2>/dev/null <<'NODEEOF'
+  const state = require(process.argv[2]);
+  const activePath = process.argv[3];
+  const toolData = JSON.parse(process.argv[4]);
 
-  fs.writeFileSync(activePath, JSON.stringify({
+  state.writeJsonAtomic(activePath, {
     cwd: toolData.cwd || process.cwd(),
     updated: new Date().toISOString(),
-  }));
-" 2>/dev/null || log_err "failed to update active marker"
+  });
+NODEEOF
+if [ $? -ne 0 ]; then log_err "failed to update active marker"; fi
 
 log "updated pending file"
 exit 0

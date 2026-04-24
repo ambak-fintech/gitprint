@@ -11,22 +11,18 @@ const DEBUG = process.env.GITPRINT_DEBUG === '1';
 const log = (...args) => { if (DEBUG) console.error('[gitprint:opencode]', ...args); };
 const logErr = (...args) => { console.error('[gitprint:opencode] ERROR:', ...args); };
 
+function loadStateHelper(repoRoot) {
+  try {
+    return require(path.join(repoRoot, '.github', 'hooks', 'gitprint-state.js'));
+  } catch {
+    return null;
+  }
+}
+
 const countLines = (str) => {
   if (!str) return 0;
   const s = String(str);
   return s.length === 0 ? 0 : s.split('\n').length;
-};
-
-const readJson = (filePath, fallback) => {
-  try {
-    return JSON.parse(fs.readFileSync(filePath, 'utf8'));
-  } catch {
-    return fallback;
-  }
-};
-
-const writeJson = (filePath, data) => {
-  fs.writeFileSync(filePath, JSON.stringify(data));
 };
 
 const deltaFromCheckpoint = (current, previous) => {
@@ -116,6 +112,7 @@ async function GitprintPlugin(ctx = {}) {
       return executionCwd;
     }
   })();
+  const state = loadStateHelper(repoRoot);
 
   let gitDir;
   try {
@@ -124,9 +121,13 @@ async function GitprintPlugin(ctx = {}) {
     gitDir = null;
   }
 
-  const pendingFile = gitDir ? path.join(gitDir, 'gitprint-opencode-pending.json') : null;
-  const activeFile = gitDir ? path.join(gitDir, 'gitprint-opencode-active.json') : null;
-  const checkpointFile = gitDir ? path.join(gitDir, 'gitprint-opencode-checkpoint.json') : null;
+  const stateContext = state && gitDir
+    ? state.resolveRepoStateContext({ cwd: repoRoot, gitDir, env: process.env })
+    : null;
+  const statePaths = stateContext ? state.resolveToolStatePaths(stateContext, 'opencode') : null;
+  const pendingFile = statePaths ? statePaths.pendingFile : null;
+  const activeFile = statePaths ? statePaths.activeFile : null;
+  const checkpointFile = statePaths ? statePaths.checkpointFile : null;
 
   let sessionId = 'unknown';
   let inputTokens = 0;
@@ -152,16 +153,16 @@ async function GitprintPlugin(ctx = {}) {
   };
 
   const updatePendingFile = (updates) => {
-    if (!pendingFile || !activeFile) return;
-    const pending = readJson(pendingFile, {});
+    if (!state || !pendingFile || !activeFile) return;
+    const pending = state.readJson(pendingFile, {});
     for (const { file, added, removed } of updates) {
       if (!file) continue;
       if (!pending[file]) pending[file] = { added: 0, removed: 0 };
       pending[file].added += added;
       pending[file].removed += removed;
     }
-    writeJson(pendingFile, pending);
-    writeJson(activeFile, {
+    state.writeJsonAtomic(pendingFile, pending);
+    state.writeJsonAtomic(activeFile, {
       cwd: executionCwd,
       session_id: sessionId,
       updated: new Date().toISOString(),
@@ -217,10 +218,10 @@ async function GitprintPlugin(ctx = {}) {
 
   const flushSession = async () => {
     try {
-      if (!gitDir || !pendingFile) return;
+      if (!state || !gitDir || !pendingFile) return;
 
-      const pending = readJson(pendingFile, {});
-      const checkpoint = readJson(checkpointFile, { files: {} });
+      const pending = state.readJson(pendingFile, {});
+      const checkpoint = state.readJson(checkpointFile, { files: {} });
       const leftoverFiles = deltaFromCheckpoint(pending, checkpoint.files || {});
       const aiFiles = Object.entries(leftoverFiles).map(([file, stats]) => ({
         file,
@@ -232,9 +233,9 @@ async function GitprintPlugin(ctx = {}) {
       const hasTokens = inputTokens > 0 || outputTokens > 0 || cacheCreation > 0 || cacheRead > 0;
       if (!hasFiles && !hasTokens) {
         log('no OpenCode data to write');
-        try { fs.rmSync(pendingFile, { force: true }); } catch {}
-        try { fs.rmSync(activeFile, { force: true }); } catch {}
-        try { fs.rmSync(checkpointFile, { force: true }); } catch {}
+        try { state.removePath(pendingFile); } catch {}
+        try { state.removePath(activeFile); } catch {}
+        try { state.removePath(checkpointFile); } catch {}
         return;
       }
 
@@ -309,9 +310,9 @@ async function GitprintPlugin(ctx = {}) {
     } catch (error) {
       logErr('session.idle handler failed:', error.message);
     } finally {
-      try { fs.rmSync(pendingFile, { force: true }); } catch {}
-      try { fs.rmSync(activeFile, { force: true }); } catch {}
-      try { fs.rmSync(checkpointFile, { force: true }); } catch {}
+      try { if (state) state.removePath(pendingFile); } catch {}
+      try { if (state) state.removePath(activeFile); } catch {}
+      try { if (state) state.removePath(checkpointFile); } catch {}
 
       inputTokens = 0;
       outputTokens = 0;
