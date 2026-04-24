@@ -3,7 +3,7 @@
   "version": "0.3.6",
   "description": "AI code attribution for pull requests — powered by Git Notes",
   "bin": {
-    "gitprint": "./bin/cli.js"
+    "gitprint": "bin/cli.js"
   },
   "scripts": {
     "test": "node --test test/unit/*.test.js test/integration/*.test.js",
@@ -27,6 +27,6 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/ambak-fintech/gitprint"
+    "url": "git+https://github.com/ambak-fintech/gitprint.git"
   }
 }
