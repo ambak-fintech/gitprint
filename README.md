@@ -49,7 +49,7 @@ gitprint init
 
 This will:
 - Detect which AI tools you have installed and install the relevant hooks
-- Add the GitHub Actions workflow at `.github/workflows/gitprint.yml`
+- Remove the old legacy GitHub Actions workflow at `.github/workflows/gitprint.yml` if it exists
 - Create `.gitprint/branch.json` to track branch parentage for accurate auto-PR targeting
 - Auto-detect your base branch (`main`, `staging`, `develop`, etc.)
 
@@ -150,6 +150,8 @@ git config --global gitprint.platformToken "your-token"
 This keeps secrets out of the repo and lets all local Gitprint hooks use the same credentials.
 
 > **Security note:** Global git config stores the token in plain text on disk. If you want a safer setup, prefer environment variables injected by your shell or a local secret manager.
+
+`gitprint init` does not require the platform token prompt anymore when global config or environment variables are already set.
 
 ### Credential source order
 

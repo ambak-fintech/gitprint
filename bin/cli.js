@@ -750,27 +750,16 @@ async function init() {
   const gitDir = execSync('git rev-parse --git-dir', { encoding: 'utf8' }).trim();
   const configFile = path.join(gitDir, 'gitprint-config');
   const configuredPlatform = readPlatformConfig();
-  let existingToken = configuredPlatform.token;
-  if (!existingToken && fs.existsSync(configFile)) {
-    const cfg = fs.readFileSync(configFile, 'utf8');
-    existingToken = (cfg.match(/^AI_PLATFORM_TOKEN=(.+)$/m) || [])[1] || existingToken;
-  }
-
   if (configuredPlatform.url && configuredPlatform.token) {
     console.log(`  ${GREEN}+${NC} using platform config from environment/global git config`);
     console.log(`   Platform URL: ${GREEN}${configuredPlatform.url}${NC}`);
+  } else if (fs.existsSync(configFile)) {
+    console.log(`  ${YELLOW}!${NC} using legacy repo-local .git/gitprint-config fallback`);
   } else {
-    const platformToken = await ask(
-      `  Platform token${existingToken ? ' [existing]' : ''}: `,
-      existingToken
-    );
-    if (platformToken) {
-      fs.writeFileSync(configFile, `AI_PLATFORM_URL=${PLATFORM_URL}\nAI_PLATFORM_TOKEN=${platformToken}\n`);
-      writeGlobalToken(platformToken);
-      console.log(`  ${GREEN}+${NC} .git/gitprint-config (local, not committed)`);
-    } else {
-      console.log(`  ${YELLOW}!${NC} platform token skipped — post-commit hook will not ingest stats`);
-    }
+    console.log(`  ${YELLOW}!${NC} platform config not set — local post-commit ingest will be skipped`);
+    console.log(`   Set once per machine with:`);
+    console.log(`   ${DIM}git config --global gitprint.platformUrl "https://platform.example.com"${NC}`);
+    console.log(`   ${DIM}git config --global gitprint.platformToken "your-token"${NC}`);
   }
   console.log('');
 
@@ -1020,16 +1009,29 @@ function doctor() {
   console.log(`  ${DIM}Platform config${NC}`);
   const drGitDir = (() => { try { return execSync('git rev-parse --git-dir', { encoding: 'utf8' }).trim(); } catch { return ''; } })();
   const drConfigFile = drGitDir ? path.join(drGitDir, 'gitprint-config') : '';
-  if (drConfigFile && fs.existsSync(drConfigFile)) {
+  const doctorPlatform = readPlatformConfig();
+  if (doctorPlatform.url && doctorPlatform.token) {
+    console.log(`  ${GREEN}+${NC} environment/global git config present (${doctorPlatform.url})`);
+  } else if (drConfigFile && fs.existsSync(drConfigFile)) {
     const cfg = fs.readFileSync(drConfigFile, 'utf8');
     if (cfg.includes('AI_PLATFORM_TOKEN=')) {
       console.log(`  ${GREEN}+${NC} .git/gitprint-config (token set, URL: ${PLATFORM_URL})`);
     } else {
-      console.log(`  ${YELLOW}!${NC} .git/gitprint-config missing token — run: gitprint init`);
+      console.log(`  ${YELLOW}!${NC} .git/gitprint-config missing token`);
     }
   } else {
-    console.log(`  ${RED}x${NC} .git/gitprint-config missing — run: gitprint init`);
+    console.log(`  ${YELLOW}!${NC} platform config not set — local post-commit ingest will be skipped`);
+  }
+
+  // Legacy workflow check
+  console.log('');
+  console.log(`  ${DIM}Legacy workflow${NC}`);
+  const legacyWorkflowPath = path.join(root, '.github', 'workflows', 'gitprint.yml');
+  if (fs.existsSync(legacyWorkflowPath)) {
+    console.log(`  ${YELLOW}!${NC} .github/workflows/gitprint.yml still exists — run: gitprint init`);
     ok = false;
+  } else {
+    console.log(`  ${GREEN}+${NC} legacy GitHub Actions workflow removed`);
   }
 
   // Node.js check

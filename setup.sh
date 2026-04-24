@@ -29,6 +29,20 @@ fi
 REPO_ROOT=$(git rev-parse --show-toplevel)
 cd "$REPO_ROOT"
 
+# ─── Cleanup legacy workflow from older Gitprint versions ───
+LEGACY_WORKFLOW=".github/workflows/gitprint.yml"
+if [ -f "$LEGACY_WORKFLOW" ]; then
+  rm -f "$LEGACY_WORKFLOW"
+  echo -e "  ${YELLOW}-${NC} Removed legacy .github/workflows/gitprint.yml"
+  if [ -d .github/workflows ] && [ -z "$(ls -A .github/workflows 2>/dev/null)" ]; then
+    rmdir .github/workflows 2>/dev/null || true
+  fi
+  if [ -d .github ] && [ -z "$(ls -A .github 2>/dev/null)" ]; then
+    rmdir .github 2>/dev/null || true
+  fi
+  echo ""
+fi
+
 # ─── Check for node ───
 if ! command -v node >/dev/null 2>&1; then
   echo -e "${RED}Node.js is required but not found${NC}"
