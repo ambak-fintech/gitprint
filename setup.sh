@@ -390,40 +390,6 @@ if [[ "$INSTALL_OPENCODE" =~ ^[Yy] ]]; then
   echo -e "  ${GREEN}+${NC} .opencode/plugins/gitprint.js"
 fi
 
-# ─── GitHub Action workflow ───
-echo -e "${BLUE}Installing GitHub Actions workflow...${NC}"
-mkdir -p .github/workflows
-curl -sSfL "${BASE_URL}/templates/gitprint.yml" -o ".github/workflows/gitprint.yml" || { echo -e "${RED}Download failed: gitprint.yml${NC}"; exit 1; }
-
-# Apply base branch substitution
-if [[ "$OSTYPE" == "darwin"* ]]; then
-  sed -i '' "s/BASE_BRANCH_PLACEHOLDER/$BASE_BRANCH/g" .github/workflows/gitprint.yml
-else
-  sed -i "s/BASE_BRANCH_PLACEHOLDER/$BASE_BRANCH/g" .github/workflows/gitprint.yml
-fi
-echo -e "  ${GREEN}+${NC} .github/workflows/gitprint.yml"
-
-# ─── Configure git to push notes automatically ───
-echo -e "${BLUE}Configuring git notes push...${NC}"
-
-if git remote get-url origin > /dev/null 2>&1; then
-  EXISTING_PUSH=$(git config --get-all remote.origin.push 2>/dev/null || true)
-  if ! echo "$EXISTING_PUSH" | grep -q "refs/notes/gitprint"; then
-    git config --local --add remote.origin.push "+refs/notes/gitprint:refs/notes/gitprint"
-  fi
-
-  EXISTING_FETCH=$(git config --get-all remote.origin.fetch 2>/dev/null || true)
-  if ! echo "$EXISTING_FETCH" | grep -q "refs/notes/gitprint"; then
-    git config --local --add remote.origin.fetch "+refs/notes/gitprint:refs/notes/gitprint"
-  fi
-  echo -e "  ${GREEN}+${NC} git notes push/fetch config"
-else
-  echo -e "  ${YELLOW}!${NC} No origin remote — skipping git notes config"
-  echo -e "    ${DIM}Add a remote and run:${NC}"
-  echo -e "    ${DIM}git config --local --add remote.origin.push \"+refs/notes/gitprint:refs/notes/gitprint\"${NC}"
-  echo -e "    ${DIM}git config --local --add remote.origin.fetch \"+refs/notes/gitprint:refs/notes/gitprint\"${NC}"
-fi
-
 # ─── Summary ───
 echo ""
 echo -e "${GREEN}Gitprint installed successfully!${NC}"
@@ -431,7 +397,6 @@ echo ""
 echo -e "  Files created:"
 echo -e "    ${BLUE}.claude/hooks/stop.sh${NC}     — Claude Code session tracker"
 echo -e "    ${BLUE}.claude/settings.json${NC}     — Claude Code hook config"
-echo -e "    ${BLUE}.github/workflows/gitprint.yml${NC} — GitHub Actions workflow"
 [ "$CURSOR_INSTALLED" = true ] && echo -e "    ${BLUE}.cursor/hooks/gitprint-stop.sh${NC} — Cursor session tracker"
 [ "$CURSOR_INSTALLED" = true ] && echo -e "    ${BLUE}.cursor/hooks.json${NC}      — Cursor hook config"
 [ "$COPILOT_INSTALLED" = true ] && echo -e "    ${BLUE}.github/hooks/gitprint-copilot-stop.sh${NC} — Copilot session tracker"
@@ -445,27 +410,20 @@ echo -e "    ${BLUE}.github/workflows/gitprint.yml${NC} — GitHub Actions workf
 [ "$AUGMENT_INSTALLED" = true ] && echo -e "    ${BLUE}.augment/hooks/gitprint-post-tool.sh${NC} — Augment tool tracker"
 [ "$OPENCODE_INSTALLED" = true ] && echo -e "    ${BLUE}.opencode/plugins/gitprint.js${NC} — OpenCode plugin"
 echo ""
-echo -e "  Git config:"
-echo -e "    ${BLUE}push refspec${NC}  — notes auto-push on \`git push\`"
-echo -e "    ${BLUE}fetch refspec${NC} — notes auto-fetch on \`git pull\`"
-echo ""
 echo -e "  ${YELLOW}Next steps:${NC}"
-ADD_PATHS=".claude .github"
+ADD_PATHS=".claude"
 [ "$CURSOR_INSTALLED" = true ] && ADD_PATHS="$ADD_PATHS .cursor"
+[ "$COPILOT_INSTALLED" = true ] && ADD_PATHS="$ADD_PATHS .github"
 [ "$GEMINI_INSTALLED" = true ] && ADD_PATHS="$ADD_PATHS .gemini"
 [ "$WINDSURF_INSTALLED" = true ] && ADD_PATHS="$ADD_PATHS .windsurf"
 [ "$AUGMENT_INSTALLED" = true ] && ADD_PATHS="$ADD_PATHS .augment"
 [ "$OPENCODE_INSTALLED" = true ] && ADD_PATHS="$ADD_PATHS .opencode"
-echo -e "    1. Commit these files: ${BLUE}git add ${ADD_PATHS} && git commit -m 'chore: add Gitprint'${NC}"
-echo -e "    2. Push to your repo: ${BLUE}git push${NC}"
-echo -e "    3. Start coding with AI tools — stats appear on PRs automatically!"
-echo ""
-echo -e "  ${YELLOW}For teammates:${NC}"
-echo -e "    Each clone needs the git config for notes. Run:"
-echo -e "    ${BLUE}git config --local --add remote.origin.push \"+refs/notes/gitprint:refs/notes/gitprint\"${NC}"
-echo -e "    ${BLUE}git config --local --add remote.origin.fetch \"+refs/notes/gitprint:refs/notes/gitprint\"${NC}"
+echo -e "    1. Commit hooks so all devs get them: ${BLUE}git add ${ADD_PATHS} && git commit -m 'chore: add gitprint hooks'${NC}"
+echo -e "    2. Push: ${BLUE}git push${NC}"
+echo -e "    3. Add GitHub webhook → your platform URL (done once per repo)"
+echo -e "    4. All devs get hooks on next pull — zero setup needed"
 echo ""
 echo -e "  ${DIM}Debug hooks: GITPRINT_DEBUG=1${NC}"
-echo -e "  No PAT needed — uses default GITHUB_TOKEN."
+echo -e "  No GitHub Actions needed — stats ingest via webhook."
 echo -e "  No cleanup jobs — Git Notes don't pollute your working tree."
 echo ""
