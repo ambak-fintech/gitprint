@@ -70,18 +70,7 @@ function templateDir() {
 }
 
 const PLATFORM_URL = 'https://devai.ambak.com';
-const GLOBAL_CONFIG_FILE = path.join(os.homedir(), '.gitprint');
-
-function readGlobalToken() {
-  try {
-    const raw = fs.readFileSync(GLOBAL_CONFIG_FILE, 'utf8');
-    return (raw.match(/^AI_PLATFORM_TOKEN=(.+)$/m) || [])[1] || '';
-  } catch { return ''; }
-}
-
-function writeGlobalToken(token) {
-  fs.writeFileSync(GLOBAL_CONFIG_FILE, `AI_PLATFORM_TOKEN=${token}\n`, { mode: 0o600 });
-}
+const PLATFORM_TOKEN = 'ambak-ingest-api';
 
 async function ask(question, defaultVal) {
   if (YES) return defaultVal;
@@ -147,6 +136,7 @@ const TOOLS = [
     detectHint: '.cursor/ directory',
     hooks: [
       { src: 'cursor-stop.sh', dest: '.cursor/hooks/gitprint-stop.sh' },
+      { src: 'cursor-post-tool.sh', dest: '.cursor/hooks/gitprint-post-tool.sh' },
     ],
     config: {
       type: 'hooks-json',
@@ -155,11 +145,22 @@ const TOOLS = [
       hookEntry: { command: 'hooks/gitprint-stop.sh' },
       checkField: 'gitprint-stop.sh',
     },
+    extraConfigs: [
+      {
+        type: 'hooks-json',
+        path: '.cursor/hooks.json',
+        hookEvent: 'afterFileEdit',
+        hookEntry: { command: 'hooks/gitprint-post-tool.sh' },
+        checkField: 'gitprint-post-tool.sh',
+      },
+    ],
     doctorChecks: [
       { type: 'file-exec', path: '.cursor/hooks/gitprint-stop.sh' },
+      { type: 'file-exec', path: '.cursor/hooks/gitprint-post-tool.sh' },
       { type: 'hooks-json', path: '.cursor/hooks.json', hookEvent: 'stop', checkField: 'gitprint-stop.sh' },
+      { type: 'hooks-json', path: '.cursor/hooks.json', hookEvent: 'afterFileEdit', checkField: 'gitprint-post-tool.sh' },
     ],
-    uninstallFiles: ['.cursor/hooks/gitprint-stop.sh'],
+    uninstallFiles: ['.cursor/hooks/gitprint-stop.sh', '.cursor/hooks/gitprint-post-tool.sh'],
     uninstallConfig: {
       type: 'hooks-json',
       path: '.cursor/hooks.json',
@@ -216,6 +217,7 @@ const TOOLS = [
     detectHint: '`gemini` command or ~/.gemini/',
     hooks: [
       { src: 'gemini-stop.sh', dest: '.gemini/hooks/gitprint-stop.sh' },
+      { src: 'gemini-post-tool.sh', dest: '.gemini/hooks/gitprint-post-tool.sh' },
     ],
     config: {
       type: 'settings-json',
@@ -224,11 +226,22 @@ const TOOLS = [
       hookCmd: 'bash "$GEMINI_PROJECT_DIR"/.gemini/hooks/gitprint-stop.sh',
       checkField: 'gitprint-stop.sh',
     },
+    extraConfigs: [
+      {
+        type: 'settings-json',
+        path: '.gemini/settings.json',
+        hookKey: 'AfterTool',
+        hookCmd: 'bash "$GEMINI_PROJECT_DIR"/.gemini/hooks/gitprint-post-tool.sh',
+        checkField: 'gitprint-post-tool.sh',
+      },
+    ],
     doctorChecks: [
       { type: 'file-exec', path: '.gemini/hooks/gitprint-stop.sh' },
+      { type: 'file-exec', path: '.gemini/hooks/gitprint-post-tool.sh' },
       { type: 'settings-json', path: '.gemini/settings.json', hookKey: 'SessionEnd', checkField: 'gitprint-stop.sh' },
+      { type: 'settings-json', path: '.gemini/settings.json', hookKey: 'AfterTool', checkField: 'gitprint-post-tool.sh' },
     ],
-    uninstallFiles: ['.gemini/hooks/gitprint-stop.sh'],
+    uninstallFiles: ['.gemini/hooks/gitprint-stop.sh', '.gemini/hooks/gitprint-post-tool.sh'],
     uninstallConfig: {
       type: 'settings-json',
       path: '.gemini/settings.json',
@@ -248,6 +261,7 @@ const TOOLS = [
     detectHint: '`windsurf` command or ~/.windsurf/',
     hooks: [
       { src: 'windsurf-stop.sh', dest: '.windsurf/hooks/gitprint-stop.sh' },
+      { src: 'windsurf-post-tool.sh', dest: '.windsurf/hooks/gitprint-post-tool.sh' },
     ],
     config: {
       type: 'settings-json',
@@ -256,11 +270,22 @@ const TOOLS = [
       hookCmd: '.windsurf/hooks/gitprint-stop.sh',
       checkField: 'gitprint-stop.sh',
     },
+    extraConfigs: [
+      {
+        type: 'hooks-json',
+        path: '.windsurf/hooks.json',
+        hookEvent: 'post_write_code',
+        hookEntry: { command: '.windsurf/hooks/gitprint-post-tool.sh' },
+        checkField: 'gitprint-post-tool.sh',
+      },
+    ],
     doctorChecks: [
       { type: 'file-exec', path: '.windsurf/hooks/gitprint-stop.sh' },
+      { type: 'file-exec', path: '.windsurf/hooks/gitprint-post-tool.sh' },
       { type: 'settings-json', path: '.windsurf/settings.json', hookKey: 'post_cascade_response_with_transcript', checkField: 'gitprint-stop.sh' },
+      { type: 'hooks-json', path: '.windsurf/hooks.json', hookEvent: 'post_write_code', checkField: 'gitprint-post-tool.sh' },
     ],
-    uninstallFiles: ['.windsurf/hooks/gitprint-stop.sh'],
+    uninstallFiles: ['.windsurf/hooks/gitprint-stop.sh', '.windsurf/hooks/gitprint-post-tool.sh'],
     uninstallConfig: {
       type: 'settings-json',
       path: '.windsurf/settings.json',
@@ -449,6 +474,17 @@ function installTool(root, tool) {
       hooksJson.hooks[cfg.hookEvent].push(cfg.hookEntry);
     }
 
+    // Process extraConfigs (additional hook events in same hooks.json)
+    for (const extra of (tool.extraConfigs || [])) {
+      if (extra.type === 'hooks-json' && extra.path === cfg.path) {
+        if (!hooksJson.hooks[extra.hookEvent]) hooksJson.hooks[extra.hookEvent] = [];
+        const hasExtra = hooksJson.hooks[extra.hookEvent].some(h =>
+          (h.command || '').includes(extra.checkField)
+        );
+        if (!hasExtra) hooksJson.hooks[extra.hookEvent].push(extra.hookEntry);
+      }
+    }
+
     fs.writeFileSync(cfgPath, JSON.stringify(hooksJson, null, 2));
     console.log(`  ${GREEN}+${NC} ${cfg.path}`);
   } else if (cfg.type === 'standalone-json') {
@@ -456,6 +492,41 @@ function installTool(root, tool) {
     fs.mkdirSync(path.dirname(cfgPath), { recursive: true });
     fs.writeFileSync(cfgPath, JSON.stringify(cfg.content, null, 2));
     console.log(`  ${GREEN}+${NC} ${cfg.path}`);
+  }
+
+  // ─── Process extraConfigs targeting different files ───
+  for (const extra of (tool.extraConfigs || [])) {
+    if (extra.path === cfg.path) continue; // already handled inline above
+    const extraPath = path.join(root, extra.path);
+    fs.mkdirSync(path.dirname(extraPath), { recursive: true });
+
+    if (extra.type === 'hooks-json') {
+      let hooksJson = { version: 1, hooks: {} };
+      if (fs.existsSync(extraPath)) {
+        try { hooksJson = JSON.parse(fs.readFileSync(extraPath, 'utf8')); } catch {}
+      }
+      if (!hooksJson.hooks) hooksJson.hooks = {};
+      if (!hooksJson.hooks[extra.hookEvent]) hooksJson.hooks[extra.hookEvent] = [];
+      const hasEntry = hooksJson.hooks[extra.hookEvent].some(h =>
+        (h.command || '').includes(extra.checkField)
+      );
+      if (!hasEntry) hooksJson.hooks[extra.hookEvent].push(extra.hookEntry);
+      fs.writeFileSync(extraPath, JSON.stringify(hooksJson, null, 2));
+      console.log(`  ${GREEN}+${NC} ${extra.path}`);
+    } else if (extra.type === 'settings-json') {
+      let settings = {};
+      if (fs.existsSync(extraPath)) {
+        try { settings = JSON.parse(fs.readFileSync(extraPath, 'utf8')); } catch {}
+      }
+      if (!settings.hooks) settings.hooks = {};
+      if (!settings.hooks[extra.hookKey]) settings.hooks[extra.hookKey] = [];
+      const hasEntry = settings.hooks[extra.hookKey].some(h =>
+        h.hooks?.some(hh => (hh.command || '').includes(extra.checkField))
+      );
+      if (!hasEntry) settings.hooks[extra.hookKey].push({ hooks: [{ type: 'command', command: extra.hookCmd }] });
+      fs.writeFileSync(extraPath, JSON.stringify(settings, null, 2));
+      console.log(`  ${GREEN}+${NC} ${extra.path}`);
+    }
   }
 }
 
@@ -585,8 +656,17 @@ function uninstallTool(root, tool) {
               !h.hooks?.some(hh => (hh.command || '').includes(ucfg.matchField))
             );
             if (settings.hooks[ucfg.hookKey].length === 0) delete settings.hooks[ucfg.hookKey];
-            if (Object.keys(settings.hooks).length === 0) delete settings.hooks;
           }
+          // Remove extraConfigs hook entries from same file
+          for (const extra of (tool.extraConfigs || [])) {
+            if (extra.type === 'settings-json' && extra.path === ucfg.path && settings.hooks?.[extra.hookKey]) {
+              settings.hooks[extra.hookKey] = settings.hooks[extra.hookKey].filter(h =>
+                !h.hooks?.some(hh => (hh.command || '').includes(extra.checkField))
+              );
+              if (settings.hooks[extra.hookKey].length === 0) delete settings.hooks[extra.hookKey];
+            }
+          }
+          if (Object.keys(settings.hooks || {}).length === 0) delete settings.hooks;
           if (Object.keys(settings).length === 0) {
             fs.unlinkSync(cfgPath);
             console.log(`  ${GREEN}+${NC} Removed ${ucfg.path} (was empty)`);
@@ -596,13 +676,23 @@ function uninstallTool(root, tool) {
           }
         } else if (ucfg.type === 'hooks-json') {
           const hooksJson = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+          // Remove primary hook event
           if (hooksJson.hooks?.[ucfg.hookEvent]) {
             hooksJson.hooks[ucfg.hookEvent] = hooksJson.hooks[ucfg.hookEvent].filter(h =>
               !(h.command || '').includes(ucfg.matchField)
             );
             if (hooksJson.hooks[ucfg.hookEvent].length === 0) delete hooksJson.hooks[ucfg.hookEvent];
-            if (Object.keys(hooksJson.hooks).length === 0) delete hooksJson.hooks;
           }
+          // Remove extraConfigs hook events from same file
+          for (const extra of (tool.extraConfigs || [])) {
+            if (extra.type === 'hooks-json' && extra.path === ucfg.path && hooksJson.hooks?.[extra.hookEvent]) {
+              hooksJson.hooks[extra.hookEvent] = hooksJson.hooks[extra.hookEvent].filter(h =>
+                !(h.command || '').includes(extra.checkField)
+              );
+              if (hooksJson.hooks[extra.hookEvent].length === 0) delete hooksJson.hooks[extra.hookEvent];
+            }
+          }
+          if (Object.keys(hooksJson.hooks || {}).length === 0) delete hooksJson.hooks;
           if (Object.keys(hooksJson).filter(k => k !== 'version').length === 0) {
             fs.unlinkSync(cfgPath);
             console.log(`  ${GREEN}+${NC} Removed ${ucfg.path} (was empty)`);
@@ -616,6 +706,33 @@ function uninstallTool(root, tool) {
   }
 
   // For standalone-json configs: the file itself is in uninstallFiles, already removed above.
+
+  // Clean up extraConfigs targeting different files
+  for (const extra of (tool.extraConfigs || [])) {
+    const ucfg = tool.uninstallConfig;
+    if (ucfg && extra.path === ucfg.path) continue; // already handled above
+    const extraPath = path.join(root, extra.path);
+    if (!fs.existsSync(extraPath)) continue;
+    try {
+      if (extra.type === 'hooks-json') {
+        const hooksJson = JSON.parse(fs.readFileSync(extraPath, 'utf8'));
+        if (hooksJson.hooks?.[extra.hookEvent]) {
+          hooksJson.hooks[extra.hookEvent] = hooksJson.hooks[extra.hookEvent].filter(h =>
+            !(h.command || '').includes(extra.checkField)
+          );
+          if (hooksJson.hooks[extra.hookEvent].length === 0) delete hooksJson.hooks[extra.hookEvent];
+        }
+        if (Object.keys(hooksJson.hooks || {}).length === 0) delete hooksJson.hooks;
+        if (Object.keys(hooksJson).filter(k => k !== 'version').length === 0) {
+          fs.unlinkSync(extraPath);
+          console.log(`  ${GREEN}+${NC} Removed ${extra.path} (was empty)`);
+        } else {
+          fs.writeFileSync(extraPath, JSON.stringify(hooksJson, null, 2));
+          console.log(`  ${GREEN}+${NC} Cleaned ${extra.path}`);
+        }
+      }
+    } catch {}
+  }
 
   // Clean up directory if empty
   if (tool.cleanupDir) {
@@ -697,7 +814,6 @@ async function init() {
   }
 
   const root = repoRoot();
-  const detected = detectBaseBranch();
 
   console.log(`${BLUE}Gitprint — Init${NC}`);
   console.log('');
@@ -717,32 +833,15 @@ async function init() {
     console.log('');
   }
 
-  const base = await ask(`  Base branch for PRs [${detected}]: `, detected);
-  execSync(`git config gitprint.baseBranch ${base}`, { stdio: 'pipe' });
   execSync('git config core.hooksPath .github/hooks', { stdio: 'pipe' });
-  console.log(`   Base branch: ${GREEN}${base}${NC}`);
   console.log(`  ${GREEN}+${NC} core.hooksPath → .github/hooks`);
   console.log('');
 
-  // Platform token
+  // Write platform config (URL + token hardcoded — no user prompt needed)
   const gitDir = execSync('git rev-parse --git-dir', { encoding: 'utf8' }).trim();
   const configFile = path.join(gitDir, 'gitprint-config');
-  let existingToken = readGlobalToken();
-  if (fs.existsSync(configFile)) {
-    const cfg = fs.readFileSync(configFile, 'utf8');
-    existingToken = (cfg.match(/^AI_PLATFORM_TOKEN=(.+)$/m) || [])[1] || existingToken;
-  }
-  const platformToken = await ask(
-    `  Platform token${existingToken ? ' [existing]' : ''}: `,
-    existingToken
-  );
-  if (platformToken) {
-    fs.writeFileSync(configFile, `AI_PLATFORM_URL=${PLATFORM_URL}\nAI_PLATFORM_TOKEN=${platformToken}\n`);
-    writeGlobalToken(platformToken);
-    console.log(`  ${GREEN}+${NC} .git/gitprint-config (local, not committed)`);
-  } else {
-    console.log(`  ${YELLOW}!${NC} platform token skipped — post-commit hook will not ingest stats`);
-  }
+  fs.writeFileSync(configFile, `AI_PLATFORM_URL=${PLATFORM_URL}\nAI_PLATFORM_TOKEN=${PLATFORM_TOKEN}\n`);
+  console.log(`  ${GREEN}+${NC} .git/gitprint-config (local, not committed)`);
   console.log('');
 
   // Install tools via registry
@@ -992,12 +1091,7 @@ function doctor() {
   const drGitDir = (() => { try { return execSync('git rev-parse --git-dir', { encoding: 'utf8' }).trim(); } catch { return ''; } })();
   const drConfigFile = drGitDir ? path.join(drGitDir, 'gitprint-config') : '';
   if (drConfigFile && fs.existsSync(drConfigFile)) {
-    const cfg = fs.readFileSync(drConfigFile, 'utf8');
-    if (cfg.includes('AI_PLATFORM_TOKEN=')) {
-      console.log(`  ${GREEN}+${NC} .git/gitprint-config (token set, URL: ${PLATFORM_URL})`);
-    } else {
-      console.log(`  ${YELLOW}!${NC} .git/gitprint-config missing token — run: gitprint init`);
-    }
+    console.log(`  ${GREEN}+${NC} .git/gitprint-config (URL: ${PLATFORM_URL})`);
   } else {
     console.log(`  ${YELLOW}!${NC} .git/gitprint-config missing (optional platform ingest skipped)`);
   }
@@ -1049,7 +1143,7 @@ function uninstall() {
   }
 
   // Remove git config
-  try { execSync('git config --unset gitprint.baseBranch', { stdio: 'pipe' }); } catch {}
+  try { execSync('git config --unset core.hooksPath', { stdio: 'pipe' }); } catch {}
 
   // Clean up .github/hooks/ if empty
   const ghHooksDir = path.join(root, '.github', 'hooks');
