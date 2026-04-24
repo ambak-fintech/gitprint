@@ -12,7 +12,6 @@ CONFIG_FILE="$GIT_DIR/gitprint-config"
 
 PLATFORM_URL=$(grep '^AI_PLATFORM_URL=' "$CONFIG_FILE" | cut -d= -f2-)
 PLATFORM_TOKEN=$(grep '^AI_PLATFORM_TOKEN=' "$CONFIG_FILE" | cut -d= -f2-)
-BASE_BRANCH=$(git config gitprint.baseBranch 2>/dev/null || echo 'main')
 
 [ -n "$PLATFORM_URL" ] && [ -n "$PLATFORM_TOKEN" ] || { log "missing platform URL or token — skipping"; exit 0; }
 
@@ -29,16 +28,20 @@ REMOTE_URL=$(git remote get-url origin 2>/dev/null || echo '')
 REPO=$(echo "$REMOTE_URL" | sed 's|.*github\.com[:/]||' | sed 's|\.git$||')
 SENDER=$(git config user.email 2>/dev/null || git config user.name 2>/dev/null || echo 'unknown')
 
-log "post-commit: branch=$CURRENT_BRANCH base=$BASE_BRANCH repo=$REPO sender=$SENDER"
+log "post-commit: branch=$CURRENT_BRANCH repo=$REPO sender=$SENDER"
 
-node - "$PLATFORM_URL" "$PLATFORM_TOKEN" "$BASE_BRANCH" "$CURRENT_BRANCH" "$REPO" "$SENDER" "$GIT_DIR" << 'NODEEOF'
+node - "$PLATFORM_URL" "$PLATFORM_TOKEN" "$CURRENT_BRANCH" "$REPO" "$SENDER" "$GIT_DIR" << 'NODEEOF'
 (async () => {
   const { execSync } = require('child_process');
   const fs = require('fs');
   const https = require('https');
   const http = require('http');
 
-  const [platformUrl, platformToken, base, branch, repo, sender, gitDir] = process.argv.slice(2);
+  const debug = process.env.GITPRINT_DEBUG === '1';
+  const log = (...a) => debug && process.stderr.write('[gitprint:node] ' + a.join(' ') + '\n');
+
+  const [platformUrl, platformToken, branch, repo, sender, gitDir] = process.argv.slice(2);
+  log(`platformUrl=${platformUrl} branch=${branch} repo=${repo}`);
   const outboxFile = require('path').join(gitDir, 'gitprint-outbox.jsonl');
 
   // ─── POST helper ───
@@ -101,18 +104,13 @@ node - "$PLATFORM_URL" "$PLATFORM_TOKEN" "$BASE_BRANCH" "$CURRENT_BRANCH" "$REPO
     }
   }
 
-  // ─── Get commits in range ───
+  // ─── Get commits (last 30 on this branch) ───
   let commitLog;
   try {
-    commitLog = execSync(`git log origin/${base}..HEAD --format="%H|||%s|||%an|||%aI" 2>/dev/null`, { encoding: 'utf8' })
-      .trim().split('\n').filter(Boolean);
-  } catch {
-    // origin/base may not exist yet (first push) — use all commits on branch
-    try {
-      commitLog = execSync(`git log --format="%H|||%s|||%an|||%aI"`, { encoding: 'utf8' })
-        .trim().split('\n').filter(Boolean).slice(0, 20);
-    } catch { process.exit(0); }
-  }
+    commitLog = execSync(`git log --format="%H|||%s|||%an|||%aI"`, { encoding: 'utf8' })
+      .trim().split('\n').filter(Boolean).slice(0, 30);
+  } catch { process.exit(0); }
+  log(`found ${commitLog.length} commits`);
   if (commitLog.length === 0) process.exit(0);
 
   const commits = commitLog.map(l => {
@@ -165,7 +163,11 @@ node - "$PLATFORM_URL" "$PLATFORM_TOKEN" "$BASE_BRANCH" "$CURRENT_BRANCH" "$REPO
     } catch {}
   }
 
-  if (allSessions.length === 0 && Object.keys(allFileStats).length === 0) process.exit(0);
+  log(`sessions=${allSessions.length} fileStats=${Object.keys(allFileStats).length}`);
+  if (allSessions.length === 0 && Object.keys(allFileStats).length === 0) {
+    log('no AI data found in notes — skipping POST');
+    process.exit(0);
+  }
 
   // ─── Cost ───
   const pricing = {
@@ -205,11 +207,7 @@ node - "$PLATFORM_URL" "$PLATFORM_TOKEN" "$BASE_BRANCH" "$CURRENT_BRANCH" "$REPO
   const isExcluded = (f) => EXCLUDE.some(p => p.test(f));
 
   let diffOutput = '';
-  try {
-    diffOutput = execSync(`git diff --numstat origin/${base}...HEAD 2>/dev/null`, { encoding: 'utf8' });
-  } catch {
-    try { diffOutput = execSync(`git diff --numstat HEAD^ HEAD 2>/dev/null`, { encoding: 'utf8' }); } catch {}
-  }
+  try { diffOutput = execSync(`git diff --numstat HEAD^ HEAD 2>/dev/null`, { encoding: 'utf8' }); } catch {}
 
   const files = [];
   diffOutput.split('\n').filter(Boolean).forEach(line => {
