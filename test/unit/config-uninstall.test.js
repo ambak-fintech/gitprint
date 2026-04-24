@@ -41,9 +41,9 @@ describe('gitprint uninstall', () => {
     assert.ok(!fs.existsSync(path.join(dir, '.claude/hooks/stop.sh')));
   });
 
-  it('removes workflow', () => {
+  it('removes post-commit hook', () => {
     runCli('uninstall', dir);
-    assert.ok(!fs.existsSync(path.join(dir, '.github/workflows/gitprint.yml')));
+    assert.ok(!fs.existsSync(path.join(dir, '.github/hooks/post-commit')));
   });
 
   it('removes cursor files when installed', () => {
@@ -73,13 +73,12 @@ describe('gitprint uninstall', () => {
     assert.doesNotThrow(() => runCli('uninstall', dir));
   });
 
-  it('preserves git notes config (prints manual instructions)', () => {
+  it('unsets gitprint.baseBranch', () => {
     runCli('uninstall', dir);
-    // Git notes refspec should still exist (not removed by uninstall)
-    const pushRefs = execSync('git config --get-all remote.origin.push 2>/dev/null || true', {
+    const baseBranch = execSync('git config --get-all gitprint.baseBranch 2>/dev/null || true', {
       cwd: dir, encoding: 'utf8', env: { ...process.env, ...GIT_ENV },
     });
-    assert.ok(pushRefs.includes('refs/notes/gitprint'), 'notes refspec should be preserved');
+    assert.strictEqual(baseBranch.trim(), '');
   });
 
   it('outputs uninstalled message', () => {
@@ -87,9 +86,9 @@ describe('gitprint uninstall', () => {
     assert.ok(output.includes('uninstalled'));
   });
 
-  it('shows manual git config removal instructions', () => {
-    const output = runCli('uninstall', dir);
-    assert.ok(output.includes('git config'));
+  it('removes post-tool-use hook file', () => {
+    runCli('uninstall', dir);
+    assert.ok(!fs.existsSync(path.join(dir, '.claude/hooks/post-tool-use.sh')));
   });
 
   it('removes standalone-json for copilot when installed', () => {

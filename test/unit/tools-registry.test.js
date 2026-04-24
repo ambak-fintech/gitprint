@@ -32,8 +32,8 @@ describe('TOOLS registry', () => {
     TOOLS = loadTools();
   });
 
-  it('has exactly 7 tool entries', () => {
-    assert.strictEqual(TOOLS.length, 7);
+  it('has exactly 8 tool entries', () => {
+    assert.strictEqual(TOOLS.length, 8);
   });
 
   it('only claude-code has required=true', () => {
@@ -59,7 +59,7 @@ describe('TOOLS registry', () => {
 
   it('expected tool IDs are present', () => {
     const ids = TOOLS.map(t => t.id);
-    for (const expected of ['claude-code', 'cursor', 'copilot', 'gemini', 'windsurf', 'augment', 'opencode']) {
+    for (const expected of ['claude-code', 'cursor', 'copilot', 'gemini', 'windsurf', 'augment', 'codex', 'opencode']) {
       assert.ok(ids.includes(expected), `missing tool: ${expected}`);
     }
   });
@@ -121,7 +121,7 @@ describe('TOOLS registry', () => {
   });
 
   it('two-hook tools have exactly 2 hooks', () => {
-    for (const id of ['copilot', 'augment']) {
+    for (const id of ['copilot', 'augment', 'codex']) {
       const tool = TOOLS.find(t => t.id === id);
       assert.strictEqual(tool.hooks.length, 2, `${id} should have 2 hooks`);
     }

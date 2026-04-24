@@ -999,8 +999,7 @@ function doctor() {
       console.log(`  ${YELLOW}!${NC} .git/gitprint-config missing token — run: gitprint init`);
     }
   } else {
-    console.log(`  ${RED}x${NC} .git/gitprint-config missing — run: gitprint init`);
-    ok = false;
+    console.log(`  ${YELLOW}!${NC} .git/gitprint-config missing (optional platform ingest skipped)`);
   }
 
   // Node.js check

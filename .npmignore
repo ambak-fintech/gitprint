@@ -1,0 +1,11 @@
+.augment/
+.claude/
+.cursor/
+.gemini/
+.github/
+.idea/
+.opencode/
+.windsurf/
+CLAUDE.md
+test/
+*.tgz

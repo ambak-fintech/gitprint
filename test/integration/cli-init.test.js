@@ -47,27 +47,22 @@ describe('CLI: gitprint init', () => {
     assert.ok(hasHook);
   });
 
-  it('creates .github/workflows/gitprint.yml', () => {
+  it('creates .claude/hooks/post-tool-use.sh', () => {
     runInit(dir);
-    assert.ok(fs.existsSync(path.join(dir, '.github/workflows/gitprint.yml')));
+    assert.ok(fs.existsSync(path.join(dir, '.claude/hooks/post-tool-use.sh')));
   });
 
-  it('replaces BASE_BRANCH_PLACEHOLDER in workflow', () => {
+  it('creates .github/hooks/post-commit', () => {
     runInit(dir);
-    const yml = fs.readFileSync(path.join(dir, '.github/workflows/gitprint.yml'), 'utf8');
-    assert.ok(!yml.includes('BASE_BRANCH_PLACEHOLDER'));
+    assert.ok(fs.existsSync(path.join(dir, '.github/hooks/post-commit')));
   });
 
-  it('configures git push/fetch refspec', () => {
+  it('configures core.hooksPath', () => {
     runInit(dir);
-    const push = execSync('git config --get-all remote.origin.push', {
+    const hooksPath = execSync('git config core.hooksPath', {
       cwd: dir, encoding: 'utf8', env: { ...process.env, ...GIT_ENV },
     });
-    const fetch = execSync('git config --get-all remote.origin.fetch', {
-      cwd: dir, encoding: 'utf8', env: { ...process.env, ...GIT_ENV },
-    });
-    assert.ok(push.includes('refs/notes/gitprint'));
-    assert.ok(fetch.includes('refs/notes/gitprint'));
+    assert.strictEqual(hooksPath.trim(), '.github/hooks');
   });
 
   it('does not duplicate hook entries on re-run', () => {

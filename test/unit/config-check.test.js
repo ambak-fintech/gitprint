@@ -46,10 +46,10 @@ describe('gitprint doctor', () => {
     assert.ok(output.includes('not executable'));
   });
 
-  it('reports fail when workflow missing', () => {
-    fs.unlinkSync(path.join(dir, '.github/workflows/gitprint.yml'));
+  it('reports fail when post-commit hook is missing', () => {
+    fs.unlinkSync(path.join(dir, '.github/hooks/post-commit'));
     const output = runCli('doctor', dir);
-    assert.ok(output.includes('gitprint.yml') && output.includes('missing'));
+    assert.ok(output.includes('post-commit') && output.includes('missing'));
   });
 
   it('reports fail when settings.json missing hook entry', () => {
@@ -58,12 +58,10 @@ describe('gitprint doctor', () => {
     assert.ok(output.includes('Stop') && output.includes('not found'));
   });
 
-  it('reports fail when git refspec missing', () => {
-    execSync('git config --local --unset-all remote.origin.push', {
-      cwd: dir, env: { ...process.env, ...GIT_ENV }, stdio: 'pipe',
-    });
+  it('shows a warning when platform config is missing', () => {
     const output = runCli('doctor', dir);
-    assert.ok(output.includes('push refspec missing'));
+    assert.ok(output.includes('Platform config'));
+    assert.ok(output.includes('optional platform ingest skipped'));
   });
 
   it('reports Node.js version', () => {
@@ -83,13 +81,13 @@ describe('gitprint doctor', () => {
     assert.ok(output.includes('Cursor'));
   });
 
-  it('shows workflow check', () => {
+  it('shows post-commit hook checks', () => {
     const output = runCli('doctor', dir);
-    assert.ok(output.includes('gitprint.yml'));
+    assert.ok(output.includes('post-commit'));
   });
 
-  it('shows git config section', () => {
+  it('shows platform config section', () => {
     const output = runCli('doctor', dir);
-    assert.ok(output.includes('Git config'));
+    assert.ok(output.includes('Platform config'));
   });
 });

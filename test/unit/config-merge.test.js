@@ -49,32 +49,31 @@ describe('gitprint init --yes', () => {
     assert.ok(hasHook, 'Stop hook not registered');
   });
 
-  it('creates .github/workflows/gitprint.yml', () => {
+  it('creates .claude/hooks/post-tool-use.sh', () => {
     runInit(dir);
-    assert.ok(fs.existsSync(path.join(dir, '.github/workflows/gitprint.yml')));
+    assert.ok(fs.existsSync(path.join(dir, '.claude/hooks/post-tool-use.sh')));
   });
 
-  it('replaces BASE_BRANCH_PLACEHOLDER in workflow', () => {
+  it('creates .github/hooks/post-commit', () => {
     runInit(dir);
-    const yml = fs.readFileSync(path.join(dir, '.github/workflows/gitprint.yml'), 'utf8');
-    assert.ok(!yml.includes('BASE_BRANCH_PLACEHOLDER'));
-    assert.ok(yml.includes('main'));
+    assert.ok(fs.existsSync(path.join(dir, '.github/hooks/post-commit')));
   });
 
-  it('configures git push refspec', () => {
+  it('registers the PostToolUse hook in .claude/settings.json', () => {
     runInit(dir);
-    const pushRefs = execSync('git config --get-all remote.origin.push', {
+    const settings = JSON.parse(fs.readFileSync(path.join(dir, '.claude/settings.json'), 'utf8'));
+    const hasHook = settings.hooks?.PostToolUse?.some(h =>
+      h.hooks?.some(hh => (hh.command || '').includes('post-tool-use.sh'))
+    );
+    assert.ok(hasHook, 'PostToolUse hook not registered');
+  });
+
+  it('configures core.hooksPath', () => {
+    runInit(dir);
+    const hooksPath = execSync('git config core.hooksPath', {
       cwd: dir, encoding: 'utf8', env: { ...process.env, ...GIT_ENV },
     });
-    assert.ok(pushRefs.includes('refs/notes/gitprint'));
-  });
-
-  it('configures git fetch refspec', () => {
-    runInit(dir);
-    const fetchRefs = execSync('git config --get-all remote.origin.fetch', {
-      cwd: dir, encoding: 'utf8', env: { ...process.env, ...GIT_ENV },
-    });
-    assert.ok(fetchRefs.includes('refs/notes/gitprint'));
+    assert.strictEqual(hooksPath.trim(), '.github/hooks');
   });
 
   it('does not duplicate hook entries on re-run', () => {
