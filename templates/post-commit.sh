@@ -9,13 +9,16 @@ log_err() { echo "[gitprint] ERROR: $*" >&2; }
 GIT_DIR=$(git rev-parse --git-dir 2>/dev/null) || exit 0
 CONFIG_FILE="$GIT_DIR/gitprint-config"
 
-PLATFORM_URL=""
-PLATFORM_TOKEN=""
-if [ -f "$CONFIG_FILE" ]; then
-  PLATFORM_URL=$(grep '^AI_PLATFORM_URL=' "$CONFIG_FILE" | cut -d= -f2-)
-  PLATFORM_TOKEN=$(grep '^AI_PLATFORM_TOKEN=' "$CONFIG_FILE" | cut -d= -f2-)
-else
-  log "no gitprint-config — platform ingest disabled"
+PLATFORM_URL="${AI_PLATFORM_URL:-$(git config --global gitprint.platformUrl 2>/dev/null || true)}"
+PLATFORM_TOKEN="${AI_PLATFORM_TOKEN:-${AI_PLATFORM_KEY:-$(git config --global gitprint.platformToken 2>/dev/null || true)}}"
+
+if [ -z "$PLATFORM_URL" ] || [ -z "$PLATFORM_TOKEN" ]; then
+  if [ -f "$CONFIG_FILE" ]; then
+    [ -n "$PLATFORM_URL" ] || PLATFORM_URL=$(grep '^AI_PLATFORM_URL=' "$CONFIG_FILE" | cut -d= -f2-)
+    [ -n "$PLATFORM_TOKEN" ] || PLATFORM_TOKEN=$(grep '^AI_PLATFORM_TOKEN=' "$CONFIG_FILE" | cut -d= -f2-)
+  else
+    log "no gitprint-config — platform ingest disabled"
+  fi
 fi
 
 BASE_BRANCH=$(git config gitprint.baseBranch 2>/dev/null || echo 'main')

@@ -72,11 +72,25 @@ function templateDir() {
 const PLATFORM_URL = 'http://localhost:3001';
 const GLOBAL_CONFIG_FILE = path.join(os.homedir(), '.gitprint');
 
+function readGlobalGitConfig(key) {
+  try {
+    return execSync(`git config --global ${key}`, { encoding: 'utf8', stdio: 'pipe' }).trim();
+  } catch {
+    return '';
+  }
+}
+
 function readGlobalToken() {
   try {
     const raw = fs.readFileSync(GLOBAL_CONFIG_FILE, 'utf8');
     return (raw.match(/^AI_PLATFORM_TOKEN=(.+)$/m) || [])[1] || '';
   } catch { return ''; }
+}
+
+function readPlatformConfig() {
+  const url = process.env.AI_PLATFORM_URL || readGlobalGitConfig('gitprint.platformUrl') || '';
+  const token = process.env.AI_PLATFORM_TOKEN || process.env.AI_PLATFORM_KEY || readGlobalGitConfig('gitprint.platformToken') || readGlobalToken() || '';
+  return { url, token };
 }
 
 function writeGlobalToken(token) {
@@ -735,21 +749,28 @@ async function init() {
   // Platform token
   const gitDir = execSync('git rev-parse --git-dir', { encoding: 'utf8' }).trim();
   const configFile = path.join(gitDir, 'gitprint-config');
-  let existingToken = readGlobalToken();
-  if (fs.existsSync(configFile)) {
+  const configuredPlatform = readPlatformConfig();
+  let existingToken = configuredPlatform.token;
+  if (!existingToken && fs.existsSync(configFile)) {
     const cfg = fs.readFileSync(configFile, 'utf8');
     existingToken = (cfg.match(/^AI_PLATFORM_TOKEN=(.+)$/m) || [])[1] || existingToken;
   }
-  const platformToken = await ask(
-    `  Platform token${existingToken ? ' [existing]' : ''}: `,
-    existingToken
-  );
-  if (platformToken) {
-    fs.writeFileSync(configFile, `AI_PLATFORM_URL=${PLATFORM_URL}\nAI_PLATFORM_TOKEN=${platformToken}\n`);
-    writeGlobalToken(platformToken);
-    console.log(`  ${GREEN}+${NC} .git/gitprint-config (local, not committed)`);
+
+  if (configuredPlatform.url && configuredPlatform.token) {
+    console.log(`  ${GREEN}+${NC} using platform config from environment/global git config`);
+    console.log(`   Platform URL: ${GREEN}${configuredPlatform.url}${NC}`);
   } else {
-    console.log(`  ${YELLOW}!${NC} platform token skipped — post-commit hook will not ingest stats`);
+    const platformToken = await ask(
+      `  Platform token${existingToken ? ' [existing]' : ''}: `,
+      existingToken
+    );
+    if (platformToken) {
+      fs.writeFileSync(configFile, `AI_PLATFORM_URL=${PLATFORM_URL}\nAI_PLATFORM_TOKEN=${platformToken}\n`);
+      writeGlobalToken(platformToken);
+      console.log(`  ${GREEN}+${NC} .git/gitprint-config (local, not committed)`);
+    } else {
+      console.log(`  ${YELLOW}!${NC} platform token skipped — post-commit hook will not ingest stats`);
+    }
   }
   console.log('');
 

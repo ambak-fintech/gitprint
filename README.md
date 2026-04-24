@@ -136,30 +136,56 @@ git push origin your-branch-name
 
 ## Configuring the AI Engineering Platform (Optional)
 
-Gitprint can post detailed attribution data to an external AI engineering platform on every push.
+Gitprint can post detailed attribution data to an external AI engineering platform from the local `post-commit` hook.
 
-### How to add the secret keys
+### Recommended local setup
 
-1. Go to your GitHub repository
-2. Click **Settings** → **Secrets and variables** → **Actions**
-3. Click the **Secrets** tab
-4. Add the following two secrets:
+Set the platform URL and token once per developer machine using global git config:
 
-| Secret Name | Value |
-|-------------|-------|
+```bash
+git config --global gitprint.platformUrl "https://platform.example.com"
+git config --global gitprint.platformToken "your-token"
+```
+
+This keeps secrets out of the repo and lets all local Gitprint hooks use the same credentials.
+
+> **Security note:** Global git config stores the token in plain text on disk. If you want a safer setup, prefer environment variables injected by your shell or a local secret manager.
+
+### Credential source order
+
+The local `post-commit` hook reads platform credentials in this order:
+
+1. `AI_PLATFORM_URL` and `AI_PLATFORM_TOKEN`
+2. `AI_PLATFORM_URL` and `AI_PLATFORM_KEY` (`AI_PLATFORM_KEY` is accepted as a compatibility alias)
+3. `git config --global gitprint.platformUrl`
+4. `git config --global gitprint.platformToken`
+5. Repo-local `.git/gitprint-config` fallback
+
+### Alternative environment-variable setup
+
+If you prefer environment variables instead of global git config:
+
+```bash
+export AI_PLATFORM_URL="https://platform.example.com"
+export AI_PLATFORM_TOKEN="your-token"
+```
+
+### Legacy repo-local fallback
+
+Older installs may still use a local `.git/gitprint-config` file with:
+
+| Key | Value |
+|-----|-------|
 | `AI_PLATFORM_URL` | The base URL of your AI platform (e.g. `https://platform.example.com`) |
-| `AI_PLATFORM_KEY` | Your API key / bearer token for the platform |
+| `AI_PLATFORM_TOKEN` | Your API key / bearer token for the platform |
 
-To add each secret:
-- Click **New repository secret**
-- Enter the name and value
-- Click **Add secret**
+This still works, but global git config is the recommended rollout path for local-only ingestion.
 
-> **Note:** If either secret is missing, the platform push step is silently skipped — the rest of the workflow continues normally.
+> **Note:** If the URL or token is missing, local platform ingest is skipped. Git note attachment still continues normally.
 
 ### What gets posted
 
-On every push to a branch with an open PR, Gitprint sends a JSON payload to `POST {AI_PLATFORM_URL}/api/ingest/push` containing:
+On each local commit where platform credentials are available, Gitprint sends a JSON payload to `POST {AI_PLATFORM_URL}/api/ingest/push` containing:
 - Repository and branch info
 - All AI sessions (tool, model, tokens, cost, turns)
 - Per-file AI vs human line attribution
