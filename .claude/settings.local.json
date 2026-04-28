@@ -50,7 +50,8 @@
       "Bash(GITPRINT_DEBUG=1 bash .github/hooks/post-commit)",
       "Bash(cp /Users/akshatjoshi/Desktop/gitprint/templates/post-commit.sh /Users/akshatjoshi/Desktop/ambak-bug-listener/.github/hooks/post-commit)",
       "Bash(chmod +x /Users/akshatjoshi/Desktop/ambak-bug-listener/.github/hooks/post-commit)",
-      "Bash(python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\('sessions:', len\\(d.get\\('sessions',[]\\)\\), 'files:', len\\(d.get\\('files',[]\\)\\), 'repo:', d.get\\('repo'\\)\\)\")"
+      "Bash(python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\('sessions:', len\\(d.get\\('sessions',[]\\)\\), 'files:', len\\(d.get\\('files',[]\\)\\), 'repo:', d.get\\('repo'\\)\\)\")",
+      "Bash(npx prisma *)"
     ]
   }
 }

@@ -267,6 +267,23 @@ if [ -z "$STATS" ] || [ "$STATS" = "{}" ]; then
   exit 0
 fi
 
+# ─── Prefer pending file for ai_files (written by AfterTool hook) ───
+GIT_DIR=$(git rev-parse --git-dir 2>/dev/null)
+PENDING_FILE="$GIT_DIR/gitprint-gemini-pending.json"
+if [ -f "$PENDING_FILE" ]; then
+  STATS=$(node -e "
+    const fs = require('fs');
+    const stats = JSON.parse(process.argv[1]);
+    const pending = JSON.parse(fs.readFileSync('$PENDING_FILE', 'utf8'));
+    stats.ai_files = Object.entries(pending).map(([file, s]) => ({
+      file, ai_lines_added: s.added || 0, ai_lines_removed: s.removed || 0
+    }));
+    console.log(JSON.stringify(stats));
+  " "$STATS")
+  rm -f "$PENDING_FILE"
+  log "merged pending file into stats"
+fi
+
 # ─── Get current HEAD SHA ───
 HEAD_SHA=$(git rev-parse HEAD 2>/dev/null)
 if [ -z "$HEAD_SHA" ]; then
