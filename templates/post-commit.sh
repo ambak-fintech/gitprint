@@ -26,11 +26,13 @@ esac
 
 REMOTE_URL=$(git remote get-url origin 2>/dev/null || echo '')
 REPO=$(echo "$REMOTE_URL" | sed 's|.*github\.com[:/]||' | sed 's|\.git$||')
-SENDER=$(git config user.email 2>/dev/null || git config user.name 2>/dev/null || echo 'unknown')
+SENDER_EMAIL=$(git config user.email 2>/dev/null || echo '')
+SENDER_NAME=$(git config user.name 2>/dev/null || echo '')
+SENDER="${SENDER_EMAIL:-${SENDER_NAME:-unknown}}"
 
 log "post-commit: branch=$CURRENT_BRANCH repo=$REPO sender=$SENDER"
 
-node - "$PLATFORM_URL" "$PLATFORM_TOKEN" "$CURRENT_BRANCH" "$REPO" "$SENDER" "$GIT_DIR" << 'NODEEOF'
+node - "$PLATFORM_URL" "$PLATFORM_TOKEN" "$CURRENT_BRANCH" "$REPO" "$SENDER" "$GIT_DIR" "$SENDER_EMAIL" "$SENDER_NAME" << 'NODEEOF'
 (async () => {
   const { execSync } = require('child_process');
   const fs = require('fs');
@@ -38,11 +40,25 @@ node - "$PLATFORM_URL" "$PLATFORM_TOKEN" "$CURRENT_BRANCH" "$REPO" "$SENDER" "$G
   const http = require('http');
 
   const debug = process.env.GITPRINT_DEBUG === '1';
+  const [platformUrl, platformToken, branch, repo, sender, gitDir, senderEmail, senderName] = process.argv.slice(2);
+  const logFile = require('path').join(gitDir, 'gitprint-post-commit.log');
+  const outboxFile = require('path').join(gitDir, 'gitprint-outbox.jsonl');
+
+  let headCommit = { sha: '', message: '' };
+  try {
+    const raw = execSync('git log -1 --format="%H|||%s"', { encoding: 'utf8' }).trim();
+    const [sha, message] = raw.split('|||');
+    headCommit = { sha: sha || '', message: message || '' };
+  } catch {}
+
+  const appendLog = (entry) => {
+    try {
+      fs.appendFileSync(logFile, JSON.stringify({ ts: new Date().toISOString(), commit: headCommit.sha, message: headCommit.message, ...entry }) + '\n');
+    } catch {}
+  };
   const log = (...a) => debug && process.stderr.write('[gitprint:node] ' + a.join(' ') + '\n');
 
-  const [platformUrl, platformToken, branch, repo, sender, gitDir] = process.argv.slice(2);
   log(`platformUrl=${platformUrl} branch=${branch} repo=${repo}`);
-  const outboxFile = require('path').join(gitDir, 'gitprint-outbox.jsonl');
 
   // ─── POST helper ───
   function postToPlatform(url, token, body) {
@@ -50,6 +66,7 @@ node - "$PLATFORM_URL" "$PLATFORM_TOKEN" "$CURRENT_BRANCH" "$REPO" "$SENDER" "$G
       const data = JSON.stringify(body);
       let parsed;
       try { parsed = new URL(url + '/api/ingest/push'); } catch {
+        appendLog({ event: 'post_error', reason: 'invalid platform URL', url });
         process.stderr.write('[gitprint] invalid platform URL\n');
         return resolve(false);
       }
@@ -69,18 +86,21 @@ node - "$PLATFORM_URL" "$PLATFORM_TOKEN" "$CURRENT_BRANCH" "$REPO" "$SENDER" "$G
         res.on('data', d => body += d);
         res.on('end', () => {
           if (res.statusCode >= 200 && res.statusCode < 300) {
+            appendLog({ event: 'post_ok', status: res.statusCode, repo, branch });
             resolve(true);
           } else {
+            appendLog({ event: 'post_failed', status: res.statusCode, response: body.slice(0, 500) });
             process.stderr.write(`[gitprint] platform responded ${res.statusCode}: ${body}\n`);
             resolve(false);
           }
         });
       });
       req.on('error', (e) => {
+        appendLog({ event: 'post_error', reason: e.message });
         process.stderr.write(`[gitprint] platform POST failed: ${e.message}\n`);
         resolve(false);
       });
-      req.setTimeout(15000, () => { req.destroy(); resolve(false); });
+      req.setTimeout(15000, () => { req.destroy(); appendLog({ event: 'post_timeout' }); resolve(false); });
       req.write(data);
       req.end();
     });
@@ -104,18 +124,139 @@ node - "$PLATFORM_URL" "$PLATFORM_TOKEN" "$CURRENT_BRANCH" "$REPO" "$SENDER" "$G
     }
   }
 
-  // ─── Get commits (last 30 on this branch) ───
+  // ─── Parse transcript delta → write note on new HEAD ───
+  // post-tool-use.sh only writes active.json (transcript pointer).
+  // We parse here so the note lands on the new commit SHA, not the old HEAD.
+  const activeFile = require('path').join(gitDir, 'gitprint-active.json');
+  const checkpointFile = require('path').join(gitDir, 'gitprint-checkpoint.json');
+  try {
+    if (!fs.existsSync(activeFile)) {
+      appendLog({ event: 'transcript_skip', reason: 'active.json not found — post-tool-use hook may not have fired' });
+    } else {
+      const active = JSON.parse(fs.readFileSync(activeFile, 'utf8'));
+      const tp = active.transcript_path;
+      appendLog({ event: 'transcript_found', transcript_path: tp, session_id: active.session_id, repo, branch });
+    }
+    if (fs.existsSync(activeFile)) {
+      const active = JSON.parse(fs.readFileSync(activeFile, 'utf8'));
+      const tp = active.transcript_path;
+      if (tp && fs.existsSync(tp)) {
+        let lastLine = 0;
+        try {
+          const cp = JSON.parse(fs.readFileSync(checkpointFile, 'utf8'));
+          if (cp.transcript_path === tp) lastLine = cp.last_line || 0;
+        } catch {}
+
+        const all = fs.readFileSync(tp, 'utf8').split('\n').filter(Boolean);
+        const delta = all.slice(lastLine);
+        log(`transcript delta: ${delta.length} new lines from offset ${lastLine}`);
+
+        if (delta.length > 0) {
+          let inp = 0, out = 0, cc = 0, cr = 0, turns = 0, apiCalls = 0;
+          const models = {};
+          const fileLineStats = {};
+          const repoRoot = (() => { try { return execSync('git rev-parse --show-toplevel', { encoding: 'utf8' }).trim(); } catch { return process.cwd(); } })();
+          const countLines = (s) => !s ? 0 : String(s).split('\n').length;
+          const trackFile = (fp, added, removed) => {
+            if (!fp) return;
+            fp = fp.replace(/^\.\//, '');
+            if (fp.startsWith('/')) {
+              if (fp.startsWith(repoRoot + '/')) fp = fp.slice(repoRoot.length + 1); else return;
+            } else {
+              const abs = require('path').resolve(process.cwd(), fp);
+              if (abs.startsWith(repoRoot + '/')) fp = abs.slice(repoRoot.length + 1);
+            }
+            const SETUP_EXCLUDE = [/^\.claude\//, /^\.github\//, /^\.gitprint\//, /^\.cursor\//, /^\.gemini\//, /^\.windsurf\//, /^\.augment\//, /^\.codex\//, /^\.opencode\//, /node_modules/];
+            if (SETUP_EXCLUDE.some(p => p.test(fp))) return;
+            if (!fileLineStats[fp]) fileLineStats[fp] = { added: 0, removed: 0 };
+            fileLineStats[fp].added += added;
+            fileLineStats[fp].removed += removed;
+          };
+
+          for (const line of delta) {
+            try {
+              const e = JSON.parse(line);
+              if (e.isSidechain || e.isApiErrorMessage) continue;
+              if (e.type === 'human') turns++;
+              if (e.type === 'assistant' && e.message?.usage) {
+                const u = e.message.usage;
+                const i = u.input_tokens || 0, o = u.output_tokens || 0;
+                const c = u.cache_creation_input_tokens || 0, r = u.cache_read_input_tokens || 0;
+                inp += i; out += o; cc += c; cr += r; apiCalls++;
+                const m = e.model || e.message?.model || 'unknown';
+                if (!models[m]) models[m] = { input_tokens: 0, output_tokens: 0, api_calls: 0 };
+                models[m].input_tokens += i + c + r;
+                models[m].output_tokens += o;
+                models[m].api_calls++;
+              }
+              if (e.type === 'assistant' && e.message?.content) {
+                for (const block of e.message.content) {
+                  if (block.type !== 'tool_use') continue;
+                  const name = block.name || '', input = block.input || {};
+                  if (/^(Edit|str_replace|str_replace_editor|edit)$/i.test(name)) {
+                    trackFile(input.file_path || input.path, countLines(input.new_str || input.new_string || input.replacement || ''), countLines(input.old_str || input.old_string || ''));
+                  }
+                  if (/^MultiEdit$/i.test(name)) {
+                    for (const ed of (input.edits || [])) trackFile(input.file_path || input.path, countLines(ed.new_str || ed.new_string || ''), countLines(ed.old_str || ed.old_string || ''));
+                  }
+                  if (/^(Write|Create|file_write|create_file|write)$/i.test(name)) {
+                    trackFile(input.file_path || input.path, countLines(input.content || input.file_text || ''), 0);
+                  }
+                }
+              }
+            } catch {}
+          }
+
+          appendLog({ event: 'transcript_parsed', delta_lines: delta.length, from_line: lastLine, total_lines: all.length, inp, out, cc, cr, api_calls: apiCalls, files: Object.keys(fileLineStats).length, repo, branch });
+          const hasContent = (inp + out + cc + cr) > 0 || Object.keys(fileLineStats).length > 0;
+          if (!hasContent) appendLog({ event: 'transcript_empty', reason: 'delta had no token usage or file edits', repo, branch });
+          if (hasContent) {
+            // Cost
+            const pricing = { opus: { input:15, output:75, cache_read:1.5, cache_creation:18.75 }, sonnet: { input:3, output:15, cache_read:0.3, cache_creation:3.75 }, haiku: { input:1, output:5, cache_read:0.1, cache_creation:1.25 } };
+            const matchP = (m) => { const ml=(m||'').toLowerCase(); if(ml.includes('opus')) return pricing.opus; if(ml.includes('haiku')) return pricing.haiku; return pricing.sonnet; };
+            let cost = 0;
+            for (const [m, info] of Object.entries(models)) { const p=matchP(m); cost += (info.input_tokens/1e6)*p.input + (info.output_tokens/1e6)*p.output; }
+            const dom = Object.keys(models).sort((a,b)=>(models[b].input_tokens+models[b].output_tokens)-(models[a].input_tokens+models[a].output_tokens))[0]||'';
+            const dp = matchP(dom);
+            cost += (cc/1e6)*dp.cache_creation + (cr/1e6)*dp.cache_read;
+
+            const headSha = execSync('git rev-parse HEAD', { encoding: 'utf8' }).trim();
+            const note = { sessions: [], ai_files: [] };
+            const sid = active.session_id || 'unknown';
+            note.sessions.push({ session_id: sid, tool: 'claude-code', timestamp: new Date().toISOString(), input_tokens: inp, output_tokens: out, cache_creation_tokens: cc, cache_read_tokens: cr, estimated_cost: Math.round(cost*10000)/10000, turns, api_calls: apiCalls, models });
+            note.ai_files = Object.entries(fileLineStats).map(([file, s]) => ({ file, ai_lines_added: s.added, ai_lines_removed: s.removed }));
+
+            execSync(`git notes --ref=gitprint add -f --file=- ${headSha}`,
+              { input: JSON.stringify(note), stdio: ['pipe', 'ignore', 'pipe'] });
+            log(`transcript parsed: ${note.sessions[0].api_calls} api calls, ${note.ai_files.length} files → note on ${headSha}`);
+          }
+
+          // Advance checkpoint so next commit only parses new lines
+          fs.writeFileSync(checkpointFile, JSON.stringify({ transcript_path: tp, last_line: all.length }));
+        }
+      }
+    }
+  } catch (e) { log(`transcript parse failed: ${e.message}`); }
+
+  // ─── Get HEAD commit only ───
   let commitLog;
   try {
-    commitLog = execSync(`git log --format="%H|||%s|||%an|||%aI"`, { encoding: 'utf8' })
-      .trim().split('\n').filter(Boolean).slice(0, 30);
+    commitLog = execSync(`git log -1 --format="%H|||%s|||%an|||%ae|||%aI"`, { encoding: 'utf8' })
+      .trim().split('\n').filter(Boolean);
   } catch { process.exit(0); }
   log(`found ${commitLog.length} commits`);
   if (commitLog.length === 0) process.exit(0);
 
   const commits = commitLog.map(l => {
-    const [sha, message, author, timestamp] = l.split('|||');
-    return { sha, message: message || '', author: author || sender, timestamp: timestamp || new Date().toISOString() };
+    const [sha, message, authorName, authorEmail, timestamp] = l.split('|||');
+    return {
+      sha,
+      message: message || '',
+      author: authorName || sender,
+      author_name: authorName || '',
+      author_email: authorEmail || '',
+      timestamp: timestamp || new Date().toISOString(),
+    };
   });
 
   // ─── Read notes, aggregate sessions + file stats ───
@@ -164,10 +305,6 @@ node - "$PLATFORM_URL" "$PLATFORM_TOKEN" "$CURRENT_BRANCH" "$REPO" "$SENDER" "$G
   }
 
   log(`sessions=${allSessions.length} fileStats=${Object.keys(allFileStats).length}`);
-  if (allSessions.length === 0 && Object.keys(allFileStats).length === 0) {
-    log('no AI data found in notes — skipping POST');
-    process.exit(0);
-  }
 
   // ─── Cost ───
   const pricing = {
@@ -203,7 +340,7 @@ node - "$PLATFORM_URL" "$PLATFORM_TOKEN" "$CURRENT_BRANCH" "$REPO" "$SENDER" "$G
     acc + (s.input_tokens||0) + (s.output_tokens||0) + (s.cache_creation_tokens||0) + (s.cache_read_tokens||0), 0);
 
   // ─── Diff reconciliation ───
-  const EXCLUDE = [/^\.claude\//, /^\.github\//, /^\.gitprint\//, /^\.cursor\//, /^\.vscode\//, /^\.idea\//];
+  const EXCLUDE = [/^\.claude\//, /^\.github\//, /^\.gitprint\//, /^\.cursor\//, /^\.gemini\//, /^\.windsurf\//, /^\.augment\//, /^\.codex\//, /^\.opencode\//, /^\.vscode\//, /^\.idea\//, /node_modules/];
   const isExcluded = (f) => EXCLUDE.some(p => p.test(f));
 
   let diffOutput = '';
@@ -264,17 +401,44 @@ node - "$PLATFORM_URL" "$PLATFORM_TOKEN" "$CURRENT_BRANCH" "$REPO" "$SENDER" "$G
       timestamp: c.timestamp,
       hasAi: aiCommitShas.has(c.sha),
       files: commitFiles,
+      author_name: c.author_name,
+      author_email: c.author_email,
     };
   });
 
   // ─── Build + POST payload ───
   const tools = [...new Set(allSessions.map(s => s.tool || 'claude-code').filter(Boolean))];
-  const payload = { repo, branch, sender, sessions: allSessions, files, commits: commitDetails, totalCost, totalTokens, tools };
+  const headSha = commits[0]?.sha || '';
+  const payload = {
+    repo, branch, sender,
+    sender_email: senderEmail || '',
+    sender_name: senderName || '',
+    note_commit_sha: headSha,
+    sessions: allSessions, files, commits: commitDetails, totalCost, totalTokens, tools,
+  };
+
+  appendLog({
+    event: 'posting',
+    repo, branch, commit: headSha,
+    sessions: allSessions.length,
+    files: files.length,
+    totalCost, totalTokens, tools,
+    note: { sessions: allSessions, ai_files: Object.entries(allFileStats).map(([file, s]) => ({ file, ...s })) },
+  });
 
   const ok = await postToPlatform(platformUrl, platformToken, payload);
   if (!ok) {
     fs.appendFileSync(outboxFile, JSON.stringify(payload) + '\n');
     process.stderr.write('[gitprint] ingest queued (.git/gitprint-outbox.jsonl) — will retry on next commit\n');
+  } else {
+    // ─── Cleanup: remove note (saves space), reset checkpoint, drop active marker ───
+    const sha = commits[0]?.sha;
+    if (sha) {
+      try { execSync(`git notes --ref=gitprint remove ${sha} 2>/dev/null`, { stdio: 'pipe' }); } catch {}
+    }
+    try { fs.unlinkSync(checkpointFile); } catch {}
+    try { fs.unlinkSync(activeFile); } catch {}
+    log('post-POST cleanup: note removed, checkpoint + active.json cleared');
   }
 
 })().catch((e) => {

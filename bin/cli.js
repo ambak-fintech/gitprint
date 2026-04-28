@@ -93,37 +93,25 @@ const TOOLS = [
     required: true,
     detect: () => true,
     hooks: [
-      { src: 'stop.sh', dest: '.claude/hooks/stop.sh' },
       { src: 'post-tool-use.sh', dest: '.claude/hooks/post-tool-use.sh' },
       { src: 'post-commit.sh', dest: '.github/hooks/post-commit' },
     ],
     config: {
       type: 'settings-json',
       path: '.claude/settings.json',
-      hookKey: 'Stop',
-      hookCmd: 'bash "$CLAUDE_PROJECT_DIR"/.claude/hooks/stop.sh',
-      checkField: 'stop.sh',
+      hookKey: 'PostToolUse',
+      hookCmd: 'bash "$CLAUDE_PROJECT_DIR"/.claude/hooks/post-tool-use.sh',
+      hookMatcher: '',
+      checkField: 'post-tool-use.sh',
     },
-    extraConfigs: [
-      {
-        type: 'settings-json',
-        path: '.claude/settings.json',
-        hookKey: 'PostToolUse',
-        hookCmd: 'bash "$CLAUDE_PROJECT_DIR"/.claude/hooks/post-tool-use.sh',
-        checkField: 'post-tool-use.sh',
-      },
-    ],
     uninstallFiles: [
       '.claude/hooks/stop.sh',
       '.claude/hooks/post-tool-use.sh',
       '.github/hooks/post-commit',
     ],
     doctorChecks: [
-      { type: 'file-exec', path: '.claude/hooks/stop.sh' },
       { type: 'file-exec', path: '.claude/hooks/post-tool-use.sh' },
       { type: 'file-exec', path: '.github/hooks/post-commit' },
-      { type: 'dry-run', path: '.claude/hooks/stop.sh', stdin: '{"transcript_path":"/dev/null","session_id":"doctor-test"}' },
-      { type: 'settings-json', path: '.claude/settings.json', hookKey: 'Stop', checkField: 'stop.sh' },
       { type: 'settings-json', path: '.claude/settings.json', hookKey: 'PostToolUse', checkField: 'post-tool-use.sh' },
     ],
     addPaths: ['.claude', '.github'],
@@ -435,9 +423,9 @@ function installTool(root, tool) {
     );
 
     if (!hasHook) {
-      settings.hooks[cfg.hookKey].push({
-        hooks: [{ type: 'command', command: cfg.hookCmd }]
-      });
+      const entry = { hooks: [{ type: 'command', command: cfg.hookCmd }] };
+      if (cfg.hookMatcher !== undefined) entry.matcher = cfg.hookMatcher;
+      settings.hooks[cfg.hookKey].push(entry);
     }
 
     // Process extraConfigs (e.g. PostToolUse hook in same settings.json)
@@ -448,9 +436,9 @@ function installTool(root, tool) {
           h.hooks?.some(hh => (hh.command || '').includes(extra.checkField))
         );
         if (!hasExtra) {
-          settings.hooks[extra.hookKey].push({
-            hooks: [{ type: 'command', command: extra.hookCmd }]
-          });
+          const extraEntry = { hooks: [{ type: 'command', command: extra.hookCmd }] };
+          if (extra.hookMatcher !== undefined) extraEntry.matcher = extra.hookMatcher;
+          settings.hooks[extra.hookKey].push(extraEntry);
         }
       }
     }
@@ -853,6 +841,14 @@ async function init() {
       continue;
     }
 
+    // Already installed — update files silently, no prompt
+    const alreadyInstalled = tool.hooks.some(h => fs.existsSync(path.join(root, h.dest)));
+    if (alreadyInstalled) {
+      installTool(root, tool);
+      installed.push(tool);
+      continue;
+    }
+
     const isDetected = tool.detect(root);
     let shouldInstall = false;
 
@@ -894,7 +890,6 @@ function status() {
     process.exit(1);
   }
 
-  const base = detectBaseBranch();
   let branch;
   try {
     branch = execSync('git rev-parse --abbrev-ref HEAD', { encoding: 'utf8' }).trim();
@@ -904,28 +899,52 @@ function status() {
   }
 
   console.log(`${BLUE}Gitprint — Status${NC}`);
-  console.log(`   Branch: ${GREEN}${branch}${NC} → ${base}`);
+  console.log(`   Branch: ${GREEN}${branch}${NC}  (HEAD commit)`);
   console.log('');
 
-  const data = gatherBranchData(base);
-  if (!data) {
-    console.log(`  ${DIM}No commits ahead of ${base}${NC}`);
+  try {
+    execSync('git fetch origin refs/notes/gitprint:refs/notes/gitprint 2>/dev/null', { stdio: 'pipe' });
+  } catch {}
+
+  let note;
+  try {
+    note = execSync('git notes --ref=gitprint show HEAD 2>/dev/null', { encoding: 'utf8' }).trim();
+  } catch {
+    note = '';
+  }
+
+  if (!note) {
+    console.log(`  ${DIM}No gitprint note on HEAD${NC}`);
+    console.log('');
     return;
   }
 
-  const { commits, notesFound, totalSessions, totalTokens, totalTurns, totalApiCalls, totalCost, files, tools } = data;
+  const data = JSON.parse(note);
+  const sessions = data.sessions || [];
+  const files = data.ai_files || [];
+
+  let totalTokens = 0, totalTurns = 0, totalApiCalls = 0, totalCost = 0;
+  const tools = {};
+  for (const s of sessions) {
+    totalTokens += (s.input_tokens || 0) + (s.output_tokens || 0) +
+                   (s.cache_creation_tokens || 0) + (s.cache_read_tokens || 0);
+    totalTurns += s.turns || 0;
+    totalApiCalls += s.api_calls || s.turns || 0;
+    totalCost += sessionCost(s);
+    const tool = s.tool || 'claude-code';
+    tools[tool] = (tools[tool] || 0) + 1;
+  }
 
   const toolSummary = Object.entries(tools).map(([t, n]) => `${getToolName(t)} (${n})`).join(', ');
-  console.log(`  Commits: ${commits.length}  |  Notes: ${notesFound}  |  Sessions: ${totalSessions}`);
-  console.log(`  Tokens:  ${fmt(totalTokens)}  |  Turns: ${totalTurns}  |  API calls: ${totalApiCalls}  |  Cost: ${fmtCost(totalCost)}`);
-  if (toolSummary) console.log(`  Tools:   ${toolSummary}`);
+  console.log(`  Sessions: ${sessions.length}`);
+  console.log(`  Tokens:   ${fmt(totalTokens)}  |  Turns: ${totalTurns}  |  API calls: ${totalApiCalls}  |  Cost: ${fmtCost(totalCost)}`);
+  if (toolSummary) console.log(`  Tools:    ${toolSummary}`);
   console.log('');
 
-  const fileEntries = Object.entries(files);
-  if (fileEntries.length > 0) {
+  if (files.length > 0) {
     console.log(`  ${YELLOW}AI-touched files:${NC}`);
-    for (const [file, stat] of fileEntries.sort((a, b) => b[1].added - a[1].added)) {
-      console.log(`    ${GREEN}+${stat.added}${NC} ${RED}-${stat.removed}${NC}  ${file}`);
+    for (const f of files.sort((a, b) => (b.ai_lines_added || 0) - (a.ai_lines_added || 0))) {
+      console.log(`    ${GREEN}+${f.ai_lines_added || 0}${NC} ${RED}-${f.ai_lines_removed || 0}${NC}  ${f.file}`);
     }
   } else {
     console.log(`  ${DIM}No AI-edited files tracked yet${NC}`);
@@ -1115,6 +1134,59 @@ function doctor() {
   console.log('');
 }
 
+// ─── LOGS ───
+
+function logs() {
+  if (!isGitRepo()) {
+    console.log(`${RED}Not inside a git repository${NC}`);
+    process.exit(1);
+  }
+  const gitDir = execSync('git rev-parse --git-dir', { encoding: 'utf8' }).trim();
+  const logFile = path.join(gitDir, 'gitprint-post-commit.log');
+
+  const clear = args.includes('--clear') || args.includes('-c');
+  if (clear) {
+    if (fs.existsSync(logFile)) {
+      fs.unlinkSync(logFile);
+      console.log(`${GREEN}Cleared${NC} ${logFile}`);
+    } else {
+      console.log(`${DIM}No log file found${NC}`);
+    }
+    return;
+  }
+
+  if (!fs.existsSync(logFile)) {
+    console.log(`${DIM}No log file found — no commits have run post-commit hook yet${NC}`);
+    return;
+  }
+
+  const lines = fs.readFileSync(logFile, 'utf8').trim().split('\n').filter(Boolean);
+  const last = args.find(a => /^\d+$/.test(a));
+  const entries = last ? lines.slice(-parseInt(last)) : lines;
+
+  console.log(`${BLUE}Gitprint — Post-Commit Logs${NC}  (${logFile})`);
+  console.log('');
+  for (const line of entries) {
+    try {
+      const e = JSON.parse(line);
+      const status = e.event === 'post_ok' ? GREEN
+        : e.event === 'skip' || e.event === 'transcript_skip' || e.event === 'transcript_empty' ? YELLOW
+        : e.event === 'post_failed' || e.event === 'post_error' || e.event === 'post_timeout' ? RED
+        : '';
+      const sha = e.commit ? e.commit.slice(0, 8) : '--------';
+      const msg = e.message ? `${DIM}${e.message.slice(0, 50)}${NC}` : '';
+      console.log(`  ${DIM}${e.ts}${NC}  ${sha}  ${status}${e.event}${NC}  ${msg}`);
+      if (e.reason) console.log(`    ${DIM}↳ ${e.reason}${NC}`);
+      if (e.response) console.log(`    ${DIM}↳ ${e.response.slice(0, 120)}${NC}`);
+    } catch {
+      console.log(`  ${line}`);
+    }
+  }
+  console.log('');
+  console.log(`  ${DIM}${entries.length} entries  |  gitprint logs --clear to reset${NC}`);
+  console.log('');
+}
+
 // ─── UNINSTALL ───
 
 function uninstall() {
@@ -1188,6 +1260,9 @@ async function main() {
       break;
     case 'update':
       await runUpdate();
+      break;
+    case 'logs':
+      logs();
       break;
     case 'uninstall':
       uninstall();
